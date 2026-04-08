@@ -1,8 +1,11 @@
+import csv
+import tempfile
 import unittest
 from pathlib import Path
 
 from xpu_simulator.backends import AscendBackend, NvidiaBackend
 from xpu_simulator.backends.base import load_hardware_config
+from xpu_simulator.calibration import load_backend_calibration, load_benchmark_rows, summarize_benchmark_rows
 from xpu_simulator.frontend import DeepSeekConfig, DeepSeekGraphBuilder, DeepSeekSourceAnalyzer
 from xpu_simulator.reporting import compare_results
 from xpu_simulator.ir.types import DType
@@ -98,15 +101,57 @@ class SimulatorScaffoldTests(unittest.TestCase):
         repo_root = Path("/Users/ray/Documents/Repo/xPU-simulatorB")
         nvidia_hw = load_hardware_config(repo_root / "configs/devices/nvidia_a100.json")
         ascend_hw = load_hardware_config(repo_root / "configs/devices/ascend_910b.json")
+        nvidia_cal = load_backend_calibration(repo_root / "configs/calibration/nvidia_default.json")
+        ascend_cal = load_backend_calibration(repo_root / "configs/calibration/ascend_default.json")
         graph = DeepSeekGraphBuilder(make_config()).build_graph(batch_size=1, seq_len=8, layers=1)
         results = {
-            "nvidia": Simulator().simulate(graph, NvidiaBackend(hardware=nvidia_hw)),
-            "ascend": Simulator().simulate(graph, AscendBackend(hardware=ascend_hw)),
+            "nvidia": Simulator().simulate(graph, NvidiaBackend(hardware=nvidia_hw, calibration=nvidia_cal)),
+            "ascend": Simulator().simulate(graph, AscendBackend(hardware=ascend_hw, calibration=ascend_cal)),
         }
         payload = compare_results(graph, results)
         self.assertIn("fastest_backend", payload)
         self.assertIn("latencies_us", payload)
         self.assertEqual(set(payload["latencies_us"].keys()), {"nvidia", "ascend"})
+
+    def test_softmax_now_has_compute_component(self) -> None:
+        graph = DeepSeekGraphBuilder(make_config()).build_graph(batch_size=1, seq_len=32, layers=1)
+        result = Simulator().simulate(graph, AscendBackend())
+        softmax = next(item for item in result.kernel_estimates if item.task_name == "layer_0_softmax")
+        self.assertGreater(softmax.compute_time_us, 0.0)
+        self.assertEqual(softmax.resource, "memory")
+
+    def test_csv_benchmark_ingestion(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            csv_path = Path(tmpdir) / "bench.csv"
+            with csv_path.open("w", newline="") as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=["op_name", "measured_time_us", "predicted_time_us", "bytes_moved", "flops"],
+                )
+                writer.writeheader()
+                writer.writerow(
+                    {
+                        "op_name": "softmax",
+                        "measured_time_us": 12.0,
+                        "predicted_time_us": 10.0,
+                        "bytes_moved": 2048,
+                        "flops": 1024,
+                    }
+                )
+                writer.writerow(
+                    {
+                        "op_name": "softmax",
+                        "measured_time_us": 18.0,
+                        "predicted_time_us": 15.0,
+                        "bytes_moved": 4096,
+                        "flops": 2048,
+                    }
+                )
+            rows = load_benchmark_rows(csv_path)
+            summary = summarize_benchmark_rows(rows)
+            self.assertEqual(len(rows), 2)
+            self.assertIn("softmax", summary)
+            self.assertGreater(summary["softmax"]["error_ratio"], 1.0)
 
 
 if __name__ == "__main__":

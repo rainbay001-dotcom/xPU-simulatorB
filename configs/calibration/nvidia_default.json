@@ -1,0 +1,31 @@
+{
+  "utilization": {
+    "matmul": 0.78,
+    "batched_matmul": 0.72,
+    "output": 0.70,
+    "norm": 0.25,
+    "softmax": 0.22,
+    "elementwise": 0.18,
+    "rope": 0.20,
+    "all_reduce": 0.05,
+    "default": 0.30
+  },
+  "bandwidth_scale": {
+    "embedding": 0.55,
+    "matmul": 0.72,
+    "batched_matmul": 0.68,
+    "softmax": 0.58,
+    "norm": 0.62,
+    "elementwise": 0.70,
+    "topk": 0.42,
+    "gather": 0.45,
+    "scatter": 0.45,
+    "all_reduce": 0.35,
+    "output": 0.60,
+    "default": 0.55
+  },
+  "modifiers": {
+    "fp8_utilization_boost": 1.10,
+    "moe_bandwidth_penalty": 0.85
+  }
+}

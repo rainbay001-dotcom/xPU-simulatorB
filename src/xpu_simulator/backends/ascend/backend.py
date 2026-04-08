@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 from ...ir.types import OpKind
+from ...calibration import BackendCalibration
 from ..base.backend import Backend
 from ..base.types import HardwareConfig
 from ..base.types import KernelEstimate, KernelTask
-from .config import ASCEND_910B
+from .config import ASCEND_910B, ASCEND_910B_CALIBRATION
 
 
 class AscendBackend(Backend):
-    def __init__(self, hardware: HardwareConfig | None = None):
+    def __init__(self, hardware: HardwareConfig | None = None, calibration: BackendCalibration | None = None):
         super().__init__(hardware=hardware or ASCEND_910B)
+        self.calibration = calibration or ASCEND_910B_CALIBRATION
 
     @property
     def name(self) -> str:
@@ -36,41 +38,19 @@ class AscendBackend(Backend):
     def _estimate_compute_time(self, task: KernelTask) -> float:
         if task.flops <= 0:
             return 0.0
-        utilization = {
-            OpKind.MATMUL: 0.68,
-            OpKind.BATCHED_MATMUL: 0.60,
-            OpKind.OUTPUT: 0.62,
-            OpKind.NORM: 0.22,
-            OpKind.SOFTMAX: 0.20,
-            OpKind.ELEMENTWISE: 0.16,
-            OpKind.ROPE: 0.18,
-            OpKind.ALL_REDUCE: 0.04,
-        }.get(task.op_kind, 0.26)
+        utilization = self.calibration.utilization_for(task.op_kind.value)
         if task.attrs.get("uses_fp8", False):
-            utilization *= 1.05
+            utilization *= self.calibration.modifier("fp8_utilization_boost", 1.05)
         if task.attrs.get("moe", False):
-            utilization *= 0.95
+            utilization *= self.calibration.modifier("moe_utilization_penalty", 0.95)
         effective_tflops = max(self.hardware.peak_tflops * utilization, 1e-6)
         return task.flops / (effective_tflops * 1e6)
 
     def _estimate_memory_time(self, task: KernelTask) -> float:
         if task.bytes_moved <= 0:
             return 0.0
-        bandwidth_scale = {
-            OpKind.EMBEDDING: 0.48,
-            OpKind.MATMUL: 0.60,
-            OpKind.BATCHED_MATMUL: 0.55,
-            OpKind.SOFTMAX: 0.45,
-            OpKind.NORM: 0.50,
-            OpKind.ELEMENTWISE: 0.58,
-            OpKind.TOPK: 0.32,
-            OpKind.GATHER: 0.30,
-            OpKind.SCATTER: 0.30,
-            OpKind.TRANSPOSE: 0.28,
-            OpKind.ALL_REDUCE: 0.24,
-            OpKind.OUTPUT: 0.52,
-        }.get(task.op_kind, 0.45)
+        bandwidth_scale = self.calibration.bandwidth_for(task.op_kind.value)
         if task.attrs.get("moe", False):
-            bandwidth_scale *= 0.80
+            bandwidth_scale *= self.calibration.modifier("moe_bandwidth_penalty", 0.80)
         effective_bandwidth = max(self.hardware.mem_bandwidth_gbps * bandwidth_scale, 1e-6)
         return task.bytes_moved / (effective_bandwidth * 1e3)
