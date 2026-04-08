@@ -19,6 +19,7 @@ def write_html_report(graph: Graph, result: SimulationResult, output_path: str |
 
 def render_html_report(graph: Graph, result: SimulationResult) -> str:
     breakdown = result_breakdown(result)
+    cache_summary = result.cache_summary
     layer_kernels: dict[str, list[dict[str, object]]] = defaultdict(list)
     preamble: list[dict[str, object]] = []
     epilogue: list[dict[str, object]] = []
@@ -120,8 +121,11 @@ def render_html_report(graph: Graph, result: SimulationResult) -> str:
       <h2>Run Summary</h2>
       <p>Backend: <strong>{escape(result.backend_name)}</strong> ({escape(result.device_name)})</p>
       <p>Total latency: <strong>{result.total_latency_us:.3f} us</strong></p>
+      <p>Mode: <strong>{escape(str(graph.metadata.get("mode", "prefill")))}</strong></p>
+      <p>Context / step tokens: <strong>{int(graph.metadata.get("context_len", graph.metadata.get("seq_len", 0)))}</strong> / <strong>{int(graph.metadata.get("step_tokens", graph.metadata.get("seq_len", 0)))}</strong></p>
       <p>Nodes / edges: <strong>{graph.node_count()}</strong> / <strong>{graph.edge_count()}</strong></p>
       <p>Peak live memory: <strong>{_format_bytes(result.memory_summary.peak_live_bytes if result.memory_summary else 0)}</strong></p>
+      {_cache_block(cache_summary)}
     </div>
     <div class="card">
       <h2>Architecture</h2>
@@ -166,6 +170,15 @@ def render_html_report(graph: Graph, result: SimulationResult) -> str:
 </body>
 </html>
 """
+
+
+def _cache_block(cache_summary) -> str:
+    if cache_summary is None:
+        return ""
+    return (
+        f"<p>KV cache total: <strong>{_format_bytes(cache_summary.kv_cache_total_bytes)}</strong></p>"
+        f"<p>KV cache per layer: <strong>{_format_bytes(cache_summary.kv_cache_bytes_per_layer)}</strong></p>"
+    )
 
 
 def _resource_table(rows: list[dict[str, object]]) -> str:

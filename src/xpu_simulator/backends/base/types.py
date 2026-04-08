@@ -57,6 +57,15 @@ class MemorySummary:
 
 
 @dataclass
+class CacheSummary:
+    mode: str
+    context_len: int
+    step_tokens: int
+    kv_cache_bytes_per_layer: int
+    kv_cache_total_bytes: int
+
+
+@dataclass
 class SimulationResult:
     backend_name: str
     device_name: str
@@ -64,6 +73,7 @@ class SimulationResult:
     kernel_estimates: list[KernelEstimate]
     critical_path: list[str] = field(default_factory=list)
     memory_summary: MemorySummary | None = None
+    cache_summary: CacheSummary | None = None
 
     @property
     def kernel_count(self) -> int:

@@ -93,6 +93,10 @@ def kernel_family(name: str) -> str:
         return "embedding"
     if name == "lm_head":
         return "lm_head"
+    if name.endswith("_kv_cache_read"):
+        return "kv_cache_read"
+    if name.endswith("_kv_cache_write"):
+        return "kv_cache_write"
     if name.endswith("_softmax"):
         return "softmax"
     if name.endswith("_attn_scores") or name.endswith("_cross_attn_scores"):

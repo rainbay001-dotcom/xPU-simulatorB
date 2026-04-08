@@ -555,6 +555,22 @@ class ToyLM:
         self.assertGreater(graph.edge_count(), graph.node_count() - 1)
         self.assertGreater(graph.metadata["branch_edge_count"], 0)
 
+    def test_decode_graph_tracks_kv_cache_nodes_and_metadata(self) -> None:
+        graph = DeepSeekGraphBuilder(make_config()).build_graph(
+            batch_size=1,
+            seq_len=1,
+            layers=1,
+            mode="decode",
+            context_len=128,
+        )
+        names = [node.name for node in graph.nodes]
+        self.assertEqual(graph.metadata["mode"], "decode")
+        self.assertEqual(graph.metadata["context_len"], 128)
+        self.assertEqual(graph.metadata["step_tokens"], 1)
+        self.assertGreater(graph.metadata["kv_cache_total_bytes"], 0)
+        self.assertIn("layer_0_kv_cache_write", names)
+        self.assertIn("layer_0_kv_cache_read", names)
+
     def test_simulator_runs_on_both_backends(self) -> None:
         graph = DeepSeekGraphBuilder(make_config()).build_graph(batch_size=1, seq_len=16, layers=1)
         nvidia_result = Simulator().simulate(graph, NvidiaBackend())
@@ -587,12 +603,40 @@ class ToyLM:
         self.assertIn("by_family", payload["breakdown"])
         self.assertGreater(payload["memory"]["peak_live_bytes"], 0)
 
+    def test_reporting_payload_contains_cache_summary_for_decode(self) -> None:
+        graph = DeepSeekGraphBuilder(make_config()).build_graph(
+            batch_size=1,
+            seq_len=1,
+            layers=1,
+            mode="decode",
+            context_len=256,
+        )
+        result = Simulator().simulate(graph, AscendBackend())
+        payload = result_to_dict(graph, result)
+        self.assertIn("cache", payload)
+        self.assertEqual(payload["cache"]["mode"], "decode")
+        self.assertEqual(payload["cache"]["context_len"], 256)
+        self.assertGreater(payload["cache"]["kv_cache_total_bytes"], 0)
+
     def test_text_summary_contains_breakdown_table(self) -> None:
         graph = DeepSeekGraphBuilder(make_config()).build_graph(batch_size=1, seq_len=8, layers=1)
         result = Simulator().simulate(graph, NvidiaBackend())
         summary = format_summary(graph, result)
         self.assertIn("Breakdown:", summary)
         self.assertIn("Top families", summary)
+
+    def test_decode_summary_mentions_mode_and_kv_cache(self) -> None:
+        graph = DeepSeekGraphBuilder(make_config()).build_graph(
+            batch_size=1,
+            seq_len=1,
+            layers=1,
+            mode="decode",
+            context_len=64,
+        )
+        result = Simulator().simulate(graph, NvidiaBackend())
+        summary = format_summary(graph, result)
+        self.assertIn("Mode: decode", summary)
+        self.assertIn("KV Cache:", summary)
 
     def test_html_report_writer_generates_layer_annotated_report(self) -> None:
         graph = DeepSeekGraphBuilder(make_config()).build_graph(batch_size=1, seq_len=8, layers=1)

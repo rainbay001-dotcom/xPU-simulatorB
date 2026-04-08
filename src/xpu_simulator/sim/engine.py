@@ -7,7 +7,7 @@ from dataclasses import replace
 from ..backends.base.backend import Backend
 from ..backends.base.types import KernelEstimate, SimulationResult
 from ..ir.graph import Graph
-from ..memory import analyze_memory
+from ..memory import analyze_cache, analyze_memory
 
 
 class Simulator:
@@ -25,6 +25,7 @@ class Simulator:
             kernel_estimates=[scheduled[node.name] for node in graph.topological_order()],
             critical_path=self._critical_path(scheduled),
             memory_summary=analyze_memory(graph),
+            cache_summary=analyze_cache(graph),
         )
 
     def _schedule(self, graph: Graph, estimates: dict[str, KernelEstimate]) -> dict[str, KernelEstimate]:

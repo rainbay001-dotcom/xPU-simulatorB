@@ -1,8 +1,8 @@
-"""Memory liveness analysis for the coarse graph IR."""
+"""Memory liveness and cache analysis for the coarse graph IR."""
 
 from __future__ import annotations
 
-from ..backends.base.types import MemoryEvent, MemorySummary
+from ..backends.base.types import CacheSummary, MemoryEvent, MemorySummary
 from ..ir.graph import Graph
 
 
@@ -33,6 +33,23 @@ def analyze_memory(graph: Graph) -> MemorySummary:
         peak_live_bytes=peak_bytes,
         final_live_bytes=live_bytes,
         events=events,
+    )
+
+
+def analyze_cache(graph: Graph) -> CacheSummary | None:
+    mode = str(graph.metadata.get("mode", "prefill"))
+    context_len = int(graph.metadata.get("context_len", graph.metadata.get("seq_len", 0)))
+    step_tokens = int(graph.metadata.get("step_tokens", graph.metadata.get("seq_len", 0)))
+    kv_cache_bytes_per_layer = int(graph.metadata.get("kv_cache_bytes_per_layer", 0))
+    kv_cache_total_bytes = int(graph.metadata.get("kv_cache_total_bytes", 0))
+    if kv_cache_bytes_per_layer <= 0 and kv_cache_total_bytes <= 0:
+        return None
+    return CacheSummary(
+        mode=mode,
+        context_len=context_len,
+        step_tokens=step_tokens,
+        kv_cache_bytes_per_layer=kv_cache_bytes_per_layer,
+        kv_cache_total_bytes=kv_cache_total_bytes,
     )
 
 

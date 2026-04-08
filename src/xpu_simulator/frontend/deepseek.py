@@ -103,16 +103,34 @@ class DeepSeekGraphBuilder:
         seq_len: int = 128,
         layers: int | None = None,
         layer_start: int = 0,
+        mode: str = "prefill",
+        context_len: int | None = None,
     ) -> Graph:
         layer_count = layers if layers is not None else self.config.n_layers
         layer_stop = min(layer_start + layer_count, self.config.n_layers)
-        graph = Graph(name=f"deepseek_b{batch_size}_s{seq_len}_l{layer_start}-{layer_stop}")
+        normalized_mode = mode.lower()
+        if normalized_mode not in {"prefill", "decode"}:
+            raise ValueError(f"unsupported mode: {mode}")
+        step_tokens = seq_len if normalized_mode == "prefill" else 1
+        effective_context_len = seq_len if normalized_mode == "prefill" else (context_len if context_len is not None else seq_len)
+        total_kv_tokens = seq_len if normalized_mode == "prefill" else effective_context_len + step_tokens
+        graph_name = (
+            f"deepseek_{normalized_mode}_b{batch_size}_ctx{effective_context_len}_t{step_tokens}_l{layer_start}-{layer_stop}"
+            if normalized_mode == "decode"
+            else f"deepseek_b{batch_size}_s{seq_len}_l{layer_start}-{layer_stop}"
+        )
+        graph = Graph(name=graph_name)
         graph.metadata["model_family"] = "deepseek"
+        graph.metadata["mode"] = normalized_mode
         graph.metadata["batch_size"] = batch_size
         graph.metadata["seq_len"] = seq_len
+        graph.metadata["context_len"] = effective_context_len
+        graph.metadata["step_tokens"] = step_tokens
         graph.metadata["dtype"] = self.config.dtype.value
         graph.metadata["layer_start"] = layer_start
         graph.metadata["layer_stop"] = layer_stop
+        graph.metadata["kv_cache_bytes_per_layer"] = self._kv_cache_bytes_per_layer(batch_size, total_kv_tokens)
+        graph.metadata["kv_cache_total_bytes"] = graph.metadata["kv_cache_bytes_per_layer"] * (layer_stop - layer_start)
         graph.metadata["architecture"] = self.architecture.to_metadata()
         if self.source_path is not None:
             graph.metadata["source_path"] = str(self.source_path)
@@ -120,12 +138,18 @@ class DeepSeekGraphBuilder:
             graph.metadata["source_features"] = self.source_features.to_metadata()
 
         prev: Node | None = None
-        embed = self._make_embedding_node(batch_size, seq_len)
+        embed = self._make_embedding_node(batch_size, step_tokens)
         graph.add_node(embed)
         prev = embed
 
         for idx in range(layer_start, layer_stop):
-            layer_nodes, layer_edges, layer_entry, layer_exit = self._build_transformer_layer(batch_size, seq_len, idx)
+            layer_nodes, layer_edges, layer_entry, layer_exit = self._build_transformer_layer(
+                batch_size,
+                step_tokens,
+                idx,
+                mode=normalized_mode,
+                context_len=effective_context_len,
+            )
             for node in layer_nodes:
                 graph.add_node(node)
             if prev is not None:
@@ -134,7 +158,7 @@ class DeepSeekGraphBuilder:
                 graph.add_edge(src, dst)
             prev = layer_exit
 
-        output = self._make_output_node(batch_size, seq_len)
+        output = self._make_output_node(batch_size, step_tokens)
         graph.add_node(output)
         if prev is not None:
             graph.add_edge(prev, output)
@@ -160,6 +184,8 @@ class DeepSeekGraphBuilder:
         batch_size: int,
         seq_len: int,
         layer_idx: int,
+        mode: str,
+        context_len: int,
     ) -> tuple[list[Node], list[tuple[Node, Node]], Node, Node]:
         prefix = f"layer_{layer_idx}"
         dense_layer = self._is_dense_layer(layer_idx)
@@ -177,6 +203,8 @@ class DeepSeekGraphBuilder:
             batch_size,
             seq_len,
             hidden,
+            mode=mode,
+            context_len=context_len,
         )
         nodes.extend(attention_nodes)
         edges.append((attn_norm, attention_entry))
@@ -230,11 +258,15 @@ class DeepSeekGraphBuilder:
         batch_size: int,
         seq_len: int,
         hidden: TensorDesc,
+        mode: str,
+        context_len: int,
     ) -> tuple[list[Node], list[tuple[Node, Node]], Node, Node]:
         q_tensor = TensorDesc((batch_size, seq_len, self.config.n_heads * self._q_head_dim()), self.config.dtype)
         kv_tensor = TensorDesc((batch_size, seq_len, self._kv_width()), self.config.dtype)
         attn_proj = TensorDesc((batch_size, seq_len, q_tensor.shape[-1] + (2 * kv_tensor.shape[-1])), self.config.dtype)
-        score_tensor = TensorDesc((batch_size, self.config.n_heads, seq_len, seq_len), self.config.dtype)
+        total_kv_tokens = seq_len if mode == "prefill" else context_len + seq_len
+        kv_pair_tensor = TensorDesc((batch_size, total_kv_tokens, 2 * self._kv_width()), self.config.dtype)
+        score_tensor = TensorDesc((batch_size, self.config.n_heads, seq_len, total_kv_tokens), self.config.dtype)
         traits = self.architecture.attention_traits
         nodes: list[Node] = []
         edges: list[tuple[Node, Node]] = []
@@ -324,15 +356,55 @@ class DeepSeekGraphBuilder:
             edges.append((prev, rope))
             prev = rope
 
+        cache_write = self._add_node(
+            nodes,
+            f"{prefix}_kv_cache_write",
+            OpKind.SCATTER,
+            [kv_tensor],
+            [kv_pair_tensor],
+            attrs={
+                "cache_op": True,
+                "cache_action": "write",
+                "execution_mode": mode,
+                "context_len": context_len,
+                "step_tokens": seq_len,
+                **self._attention_attrs(mode=mode, context_len=context_len, step_tokens=seq_len),
+            },
+            bytes_moved=self._kv_cache_bytes(batch_size, seq_len),
+        )
+        edges.append((prev, cache_write))
+        prev = cache_write
+
+        attn_kv_source = kv_pair_tensor
+        if mode == "decode":
+            cache_read = self._add_node(
+                nodes,
+                f"{prefix}_kv_cache_read",
+                OpKind.GATHER,
+                [kv_pair_tensor],
+                [kv_pair_tensor],
+                attrs={
+                    "cache_op": True,
+                    "cache_action": "read",
+                    "execution_mode": mode,
+                    "context_len": context_len,
+                    "step_tokens": seq_len,
+                    **self._attention_attrs(mode=mode, context_len=context_len, step_tokens=seq_len),
+                },
+                bytes_moved=self._kv_cache_bytes(batch_size, total_kv_tokens),
+            )
+            edges.append((cache_write, cache_read))
+            prev = cache_read
+
         attn_scores = self._add_node(
             nodes,
             f"{prefix}_attn_scores",
             OpKind.BATCHED_MATMUL,
-            [q_tensor, kv_tensor],
+            [q_tensor, attn_kv_source],
             [score_tensor],
-            attrs=self._attention_attrs(),
-            flops=2 * batch_size * self.config.n_heads * seq_len * seq_len * self._q_head_dim(),
-            bytes_moved=q_tensor.size_bytes + kv_tensor.size_bytes,
+            attrs=self._attention_attrs(mode=mode, context_len=context_len, step_tokens=seq_len),
+            flops=2 * batch_size * self.config.n_heads * seq_len * total_kv_tokens * self._q_head_dim(),
+            bytes_moved=q_tensor.size_bytes + attn_kv_source.size_bytes,
         )
         edges.append((prev, attn_scores))
 
@@ -356,19 +428,20 @@ class DeepSeekGraphBuilder:
             OpKind.SOFTMAX,
             [score_tensor],
             [score_tensor],
-            flops=5 * batch_size * self.config.n_heads * seq_len * seq_len,
-            bytes_moved=4 * batch_size * self.config.n_heads * seq_len * seq_len * hidden.bytes_per_element,
+            attrs=self._attention_attrs(mode=mode, context_len=context_len, step_tokens=seq_len),
+            flops=5 * batch_size * self.config.n_heads * seq_len * total_kv_tokens,
+            bytes_moved=4 * batch_size * self.config.n_heads * seq_len * total_kv_tokens * hidden.bytes_per_element,
         )
         edges.append(((attn_topk or attn_scores), softmax))
         attn_out = self._add_node(
             nodes,
             f"{prefix}_attn_out",
             OpKind.BATCHED_MATMUL,
-            [score_tensor, kv_tensor],
+            [score_tensor, attn_kv_source],
             [hidden],
-            attrs=self._attention_attrs(),
-            flops=2 * batch_size * self.config.n_heads * seq_len * seq_len * self._kv_head_dim(),
-            bytes_moved=score_tensor.size_bytes + kv_tensor.size_bytes + hidden.size_bytes,
+            attrs=self._attention_attrs(mode=mode, context_len=context_len, step_tokens=seq_len),
+            flops=2 * batch_size * self.config.n_heads * seq_len * total_kv_tokens * self._kv_head_dim(),
+            bytes_moved=score_tensor.size_bytes + attn_kv_source.size_bytes + hidden.size_bytes,
         )
         edges.append((softmax, attn_out))
         attention_exit = attn_out
@@ -384,7 +457,7 @@ class DeepSeekGraphBuilder:
                     "uses_fp8": bool(self.source_features and self.source_features.uses_fp8),
                     "source_class": self.architecture.attention_class,
                     "projection_style": "output",
-                    **self._attention_attrs(),
+                    **self._attention_attrs(mode=mode, context_len=context_len, step_tokens=seq_len),
                 },
                 flops=2 * batch_size * seq_len * self.config.dim * self.config.dim,
                 bytes_moved=hidden.size_bytes * 2,
@@ -656,7 +729,12 @@ class DeepSeekGraphBuilder:
             return TensorDesc((batch_size, seq_len, self._kv_width()), self.config.dtype)
         return TensorDesc((batch_size, seq_len, self.config.dim), self.config.dtype)
 
-    def _attention_attrs(self) -> dict[str, object]:
+    def _attention_attrs(
+        self,
+        mode: str = "prefill",
+        context_len: int | None = None,
+        step_tokens: int | None = None,
+    ) -> dict[str, object]:
         kv_heads = self.config.n_kv_heads or self.config.n_heads
         variant = "mha"
         if kv_heads == 1 and self.config.n_heads > 1:
@@ -668,6 +746,9 @@ class DeepSeekGraphBuilder:
             "num_kv_heads": kv_heads,
             "attention_variant": variant,
             "kv_group_ratio": self.config.n_heads / max(kv_heads, 1),
+            "execution_mode": mode,
+            "context_len": context_len or 0,
+            "step_tokens": step_tokens or 0,
         }
 
     def _q_head_dim(self) -> int:
@@ -683,6 +764,12 @@ class DeepSeekGraphBuilder:
     def _kv_width(self) -> int:
         kv_heads = self.config.n_kv_heads or self.config.n_heads
         return kv_heads * self._kv_head_dim()
+
+    def _kv_cache_bytes(self, batch_size: int, tokens: int) -> int:
+        return batch_size * tokens * (2 * self._kv_width()) * self._hidden_tensor(1, 1).bytes_per_element
+
+    def _kv_cache_bytes_per_layer(self, batch_size: int, total_tokens: int) -> int:
+        return self._kv_cache_bytes(batch_size, total_tokens)
 
     def _dense_ffn_node_names(self) -> tuple[str, str, str]:
         gate_attrs = set(self.architecture.dense_ffn_traits.get("gate_attrs", []))

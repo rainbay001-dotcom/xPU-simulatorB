@@ -8,7 +8,7 @@ from .breakdown import format_breakdown_table, result_breakdown
 
 
 def result_to_dict(graph: Graph, result: SimulationResult) -> dict[str, object]:
-    return {
+    payload = {
         "graph": {
             "name": graph.name,
             "nodes": graph.node_count(),
@@ -46,13 +46,26 @@ def result_to_dict(graph: Graph, result: SimulationResult) -> dict[str, object]:
             ],
         },
     }
+    if result.cache_summary:
+        payload["cache"] = {
+            "mode": result.cache_summary.mode,
+            "context_len": result.cache_summary.context_len,
+            "step_tokens": result.cache_summary.step_tokens,
+            "kv_cache_bytes_per_layer": result.cache_summary.kv_cache_bytes_per_layer,
+            "kv_cache_total_bytes": result.cache_summary.kv_cache_total_bytes,
+        }
+    return payload
 
 
 def format_summary(graph: Graph, result: SimulationResult) -> str:
     source_features = graph.metadata.get("source_features", {})
+    execution_mode = graph.metadata.get("mode", "prefill")
+    context_len = int(graph.metadata.get("context_len", graph.metadata.get("seq_len", 0)))
+    step_tokens = int(graph.metadata.get("step_tokens", graph.metadata.get("seq_len", 0)))
     lines = [
         f"Graph: {graph.name}",
         f"Backend: {result.backend_name} ({result.device_name})",
+        f"Mode: {execution_mode}  Context: {context_len}  Step tokens: {step_tokens}",
         f"Nodes: {graph.node_count()}  Edges: {graph.edge_count()}",
         f"Total FLOPs: {graph.total_flops():.3e}",
         f"Total Bytes: {graph.total_bytes():.3e}",
@@ -63,9 +76,16 @@ def format_summary(graph: Graph, result: SimulationResult) -> str:
         f"Peak Live Memory: {_format_bytes(result.memory_summary.peak_live_bytes) if result.memory_summary else '0 B'}",
         "Top kernels:",
     ]
+    if result.cache_summary:
+        lines.insert(
+            9,
+            "KV Cache: "
+            f"{_format_bytes(result.cache_summary.kv_cache_total_bytes)} total, "
+            f"{_format_bytes(result.cache_summary.kv_cache_bytes_per_layer)} per layer",
+        )
     if source_features:
         lines.insert(
-            2,
+            3,
             "Source Features: "
             f"fp8={source_features.get('uses_fp8', False)} "
             f"moe={source_features.get('uses_moe', False)} "

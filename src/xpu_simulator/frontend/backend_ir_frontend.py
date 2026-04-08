@@ -22,6 +22,8 @@ class BackendIrGraphBuilder:
         seq_len: int = 128,
         layers: int | None = None,
         layer_start: int = 0,
+        mode: str = "prefill",
+        context_len: int | None = None,
     ) -> Graph:
         raw = json.loads(self.ir_path.read_text())
         graph = Graph(name=raw.get("name", self.ir_path.stem))
@@ -30,6 +32,9 @@ class BackendIrGraphBuilder:
         graph.metadata["source_path"] = str(self.ir_path)
         graph.metadata["batch_size"] = batch_size
         graph.metadata["seq_len"] = seq_len
+        graph.metadata["mode"] = mode
+        graph.metadata["context_len"] = context_len if context_len is not None else seq_len
+        graph.metadata["step_tokens"] = seq_len if mode == "prefill" else 1
         graph.metadata["layer_start"] = layer_start
         graph.metadata["layer_stop"] = layer_start + (layers or 0)
 

@@ -39,6 +39,7 @@ class NvidiaBackend(Backend):
         if task.flops <= 0:
             return 0.0
         utilization = self.calibration.utilization_for(task.op_kind.value)
+        mode = str(task.attrs.get("execution_mode", "prefill"))
         if task.attrs.get("uses_fp8", False):
             utilization *= self.calibration.modifier("fp8_utilization_boost", 1.10)
         attention_variant = task.attrs.get("attention_variant")
@@ -46,6 +47,8 @@ class NvidiaBackend(Backend):
             utilization *= self.calibration.modifier("gqa_utilization_boost", 1.03)
         elif attention_variant == "mqa":
             utilization *= self.calibration.modifier("mqa_utilization_boost", 1.05)
+        if mode == "decode" and task.op_kind in {OpKind.BATCHED_MATMUL, OpKind.SOFTMAX}:
+            utilization *= self.calibration.modifier("decode_attention_utilization_penalty", 0.82)
         effective_tflops = max(self.hardware.peak_tflops * utilization, 1e-6)
         return task.flops / (effective_tflops * 1e6)
 
@@ -53,6 +56,7 @@ class NvidiaBackend(Backend):
         if task.bytes_moved <= 0:
             return 0.0
         bandwidth_scale = self.calibration.bandwidth_for(task.op_kind.value)
+        mode = str(task.attrs.get("execution_mode", "prefill"))
         if task.attrs.get("moe", False):
             bandwidth_scale *= self.calibration.modifier("moe_bandwidth_penalty", 0.85)
         attention_variant = task.attrs.get("attention_variant")
@@ -60,5 +64,11 @@ class NvidiaBackend(Backend):
             bandwidth_scale *= self.calibration.modifier("gqa_bandwidth_boost", 1.05)
         elif attention_variant == "mqa":
             bandwidth_scale *= self.calibration.modifier("mqa_bandwidth_boost", 1.08)
+        if task.attrs.get("cache_op", False):
+            action = str(task.attrs.get("cache_action", "read"))
+            modifier = "cache_write_bandwidth_penalty" if action == "write" else "cache_read_bandwidth_penalty"
+            bandwidth_scale *= self.calibration.modifier(modifier, 0.78 if action == "write" else 0.84)
+        if mode == "decode" and task.op_kind in {OpKind.BATCHED_MATMUL, OpKind.SOFTMAX, OpKind.GATHER, OpKind.SCATTER}:
+            bandwidth_scale *= self.calibration.modifier("decode_attention_bandwidth_penalty", 0.76)
         effective_bandwidth = max(self.hardware.mem_bandwidth_gbps * bandwidth_scale, 1e-6)
         return task.bytes_moved / (effective_bandwidth * 1e3)

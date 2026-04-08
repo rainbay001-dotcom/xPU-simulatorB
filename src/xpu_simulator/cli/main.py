@@ -59,6 +59,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model-source", help="Path to model source file for AST-based architecture extraction")
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--seq-len", type=int, default=128)
+    parser.add_argument("--mode", choices=["prefill", "decode"], default="prefill")
+    parser.add_argument("--context-len", type=int, help="Existing KV-cache context length for decode mode")
     parser.add_argument("--layer-start", type=int, default=0)
     parser.add_argument("--layers", type=int, default=None)
     parser.add_argument("--dump-memory-events", action="store_true")
@@ -95,6 +97,8 @@ def main() -> None:
             seq_len=args.seq_len,
             layers=args.layers,
             layer_start=args.layer_start,
+            mode=args.mode,
+            context_len=args.context_len,
         )
         candidate_builder = _make_graph_builder(args, config, frontend_override=args.compare_target)
         candidate = candidate_builder.build_graph(
@@ -102,6 +106,8 @@ def main() -> None:
             seq_len=args.seq_len,
             layers=args.layers,
             layer_start=args.layer_start,
+            mode=args.mode,
+            context_len=args.context_len,
         )
         if args.json_output:
             print(json.dumps(diff_graphs(reference, candidate), indent=2))
@@ -114,6 +120,8 @@ def main() -> None:
         seq_len=args.seq_len,
         layers=args.layers,
         layer_start=args.layer_start,
+        mode=args.mode,
+        context_len=args.context_len,
     )
     simulator = Simulator()
 
