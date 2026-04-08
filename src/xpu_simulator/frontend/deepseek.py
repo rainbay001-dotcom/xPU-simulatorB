@@ -231,7 +231,9 @@ class DeepSeekGraphBuilder:
         seq_len: int,
         hidden: TensorDesc,
     ) -> tuple[list[Node], list[tuple[Node, Node]], Node, Node]:
-        attn_proj = TensorDesc((batch_size, seq_len, self.config.n_heads * self.config.v_head_dim), self.config.dtype)
+        q_tensor = TensorDesc((batch_size, seq_len, self.config.n_heads * self._q_head_dim()), self.config.dtype)
+        kv_tensor = TensorDesc((batch_size, seq_len, self._kv_width()), self.config.dtype)
+        attn_proj = TensorDesc((batch_size, seq_len, q_tensor.shape[-1] + (2 * kv_tensor.shape[-1])), self.config.dtype)
         score_tensor = TensorDesc((batch_size, self.config.n_heads, seq_len, seq_len), self.config.dtype)
         traits = self.architecture.attention_traits
         nodes: list[Node] = []
@@ -251,8 +253,9 @@ class DeepSeekGraphBuilder:
                     "source_class": self.architecture.attention_class,
                     "projection_count": traits.get("projection_count", 0),
                     "projection_style": "fused_qkv",
+                    **self._attention_attrs(),
                 },
-                flops=6 * batch_size * seq_len * self.config.dim * self.config.dim,
+                flops=2 * batch_size * seq_len * self.config.dim * attn_proj.shape[-1],
                 bytes_moved=hidden.size_bytes + attn_proj.size_bytes,
             )
             attention_entry = qkv_proj
@@ -264,16 +267,17 @@ class DeepSeekGraphBuilder:
                     f"{prefix}_{projection_attr}",
                     OpKind.MATMUL,
                     [hidden],
-                    [attn_proj],
+                    [self._projection_tensor(batch_size, seq_len, projection_attr)],
                     attrs={
                         "uses_fp8": bool(self.source_features and self.source_features.uses_fp8),
                         "source_class": self.architecture.attention_class,
                         "projection_count": traits.get("projection_count", 0),
                         "projection_style": "split_qkv",
                         "projection_attr": projection_attr,
+                        **self._attention_attrs(),
                     },
-                    flops=2 * batch_size * seq_len * self.config.dim * self.config.dim,
-                    bytes_moved=hidden.size_bytes + attn_proj.size_bytes,
+                    flops=2 * batch_size * seq_len * self.config.dim * self._projection_tensor(batch_size, seq_len, projection_attr).shape[-1],
+                    bytes_moved=hidden.size_bytes + self._projection_tensor(batch_size, seq_len, projection_attr).size_bytes,
                 )
                 for projection_attr in projection_attrs
             ]
@@ -289,6 +293,7 @@ class DeepSeekGraphBuilder:
                     "source_class": self.architecture.attention_class,
                     "projection_style": "split_qkv",
                     "projection_attrs": projection_attrs,
+                    **self._attention_attrs(),
                 },
                 bytes_moved=sum(tensor.size_bytes for tensor in merge_inputs) + attn_proj.size_bytes,
             )
@@ -323,10 +328,11 @@ class DeepSeekGraphBuilder:
             nodes,
             f"{prefix}_attn_scores",
             OpKind.BATCHED_MATMUL,
-            [attn_proj],
+            [q_tensor, kv_tensor],
             [score_tensor],
-            flops=4 * batch_size * self.config.n_heads * seq_len * seq_len * self.config.v_head_dim,
-            bytes_moved=attn_proj.size_bytes * 2,
+            attrs=self._attention_attrs(),
+            flops=2 * batch_size * self.config.n_heads * seq_len * seq_len * self._q_head_dim(),
+            bytes_moved=q_tensor.size_bytes + kv_tensor.size_bytes,
         )
         edges.append((prev, attn_scores))
 
@@ -358,10 +364,11 @@ class DeepSeekGraphBuilder:
             nodes,
             f"{prefix}_attn_out",
             OpKind.BATCHED_MATMUL,
-            [attn_proj],
+            [score_tensor, kv_tensor],
             [hidden],
-            flops=4 * batch_size * self.config.n_heads * seq_len * seq_len * self.config.v_head_dim,
-            bytes_moved=attn_proj.size_bytes + hidden.size_bytes,
+            attrs=self._attention_attrs(),
+            flops=2 * batch_size * self.config.n_heads * seq_len * seq_len * self._kv_head_dim(),
+            bytes_moved=score_tensor.size_bytes + kv_tensor.size_bytes + hidden.size_bytes,
         )
         edges.append((softmax, attn_out))
         attention_exit = attn_out
@@ -377,6 +384,7 @@ class DeepSeekGraphBuilder:
                     "uses_fp8": bool(self.source_features and self.source_features.uses_fp8),
                     "source_class": self.architecture.attention_class,
                     "projection_style": "output",
+                    **self._attention_attrs(),
                 },
                 flops=2 * batch_size * seq_len * self.config.dim * self.config.dim,
                 bytes_moved=hidden.size_bytes * 2,
@@ -402,7 +410,7 @@ class DeepSeekGraphBuilder:
             OpKind.BATCHED_MATMUL,
             [hidden],
             [score_tensor],
-            attrs={"cross_attention": True, "source_attr": self.architecture.block_cross_attention_attr},
+            attrs={"cross_attention": True, "source_attr": self.architecture.block_cross_attention_attr, **self._attention_attrs()},
             flops=4 * batch_size * self.config.n_heads * seq_len * seq_len * self._kv_head_dim(),
             bytes_moved=hidden.size_bytes * 2,
         )
@@ -412,7 +420,7 @@ class DeepSeekGraphBuilder:
             OpKind.SOFTMAX,
             [score_tensor],
             [score_tensor],
-            attrs={"cross_attention": True, "source_attr": self.architecture.block_cross_attention_attr},
+            attrs={"cross_attention": True, "source_attr": self.architecture.block_cross_attention_attr, **self._attention_attrs()},
             flops=5 * batch_size * self.config.n_heads * seq_len * seq_len,
             bytes_moved=4 * batch_size * self.config.n_heads * seq_len * seq_len * hidden.bytes_per_element,
         )
@@ -422,7 +430,7 @@ class DeepSeekGraphBuilder:
             OpKind.BATCHED_MATMUL,
             [hidden],
             [hidden],
-            attrs={"cross_attention": True, "source_attr": self.architecture.block_cross_attention_attr},
+            attrs={"cross_attention": True, "source_attr": self.architecture.block_cross_attention_attr, **self._attention_attrs()},
             flops=4 * batch_size * self.config.n_heads * seq_len * seq_len * self._kv_head_dim(),
             bytes_moved=hidden.size_bytes * 2,
         )
@@ -641,11 +649,40 @@ class DeepSeekGraphBuilder:
                 return name
         return "o_proj"
 
-    def _kv_head_dim(self) -> int:
+    def _projection_tensor(self, batch_size: int, seq_len: int, projection_attr: str) -> TensorDesc:
+        if projection_attr.startswith("q") or projection_attr in {"wq", "wq_a", "wq_b", "query_proj"}:
+            return TensorDesc((batch_size, seq_len, self.config.n_heads * self._q_head_dim()), self.config.dtype)
+        if projection_attr.startswith("k") or projection_attr.startswith("v") or projection_attr in {"wk", "wv", "wkv_a", "wkv_b", "key_proj", "value_proj"}:
+            return TensorDesc((batch_size, seq_len, self._kv_width()), self.config.dtype)
+        return TensorDesc((batch_size, seq_len, self.config.dim), self.config.dtype)
+
+    def _attention_attrs(self) -> dict[str, object]:
         kv_heads = self.config.n_kv_heads or self.config.n_heads
-        if kv_heads <= 0:
+        variant = "mha"
+        if kv_heads == 1 and self.config.n_heads > 1:
+            variant = "mqa"
+        elif kv_heads < self.config.n_heads:
+            variant = "gqa"
+        return {
+            "num_heads": self.config.n_heads,
+            "num_kv_heads": kv_heads,
+            "attention_variant": variant,
+            "kv_group_ratio": self.config.n_heads / max(kv_heads, 1),
+        }
+
+    def _q_head_dim(self) -> int:
+        if self.config.qk_rope_head_dim > 0:
+            return self.config.qk_rope_head_dim
+        return self.config.dim // max(self.config.n_heads, 1)
+
+    def _kv_head_dim(self) -> int:
+        if self.config.v_head_dim > 0:
             return self.config.v_head_dim
-        return self.config.dim // kv_heads
+        return self._q_head_dim()
+
+    def _kv_width(self) -> int:
+        kv_heads = self.config.n_kv_heads or self.config.n_heads
+        return kv_heads * self._kv_head_dim()
 
     def _dense_ffn_node_names(self) -> tuple[str, str, str]:
         gate_attrs = set(self.architecture.dense_ffn_traits.get("gate_attrs", []))

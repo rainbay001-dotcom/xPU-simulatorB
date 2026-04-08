@@ -12,6 +12,7 @@ from xpu_simulator.frontend import (
     DeepSeekSourceAnalyzer,
     ModelConfig,
     SourceModelAnalyzer,
+    TorchFxGraphBuilder,
     TransformerSourceGraphBuilder,
 )
 from xpu_simulator.reporting import compare_results
@@ -181,6 +182,51 @@ class ToyLM:
         self.assertIn("layer_0_k_proj", graph.predecessors("layer_0_attn_proj_merge"))
         self.assertIn("layer_0_v_proj", graph.predecessors("layer_0_attn_proj_merge"))
 
+    def test_torch_fx_builder_traces_executable_model(self) -> None:
+        source_text = '''
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class ToyFxModel(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.embed = nn.Embedding(config.vocab_size, config.hidden_size)
+        self.q_proj = nn.Linear(config.hidden_size, config.hidden_size)
+        self.k_proj = nn.Linear(config.hidden_size, config.hidden_size)
+        self.v_proj = nn.Linear(config.hidden_size, config.hidden_size)
+        self.o_proj = nn.Linear(config.hidden_size, config.hidden_size)
+        self.norm = nn.LayerNorm(config.hidden_size)
+        self.head = nn.Linear(config.hidden_size, config.vocab_size)
+
+    def forward(self, input_ids):
+        x = self.embed(input_ids)
+        q = self.q_proj(x)
+        k = self.k_proj(x)
+        v = self.v_proj(x)
+        scores = torch.matmul(q, k.transpose(-1, -2))
+        probs = F.softmax(scores, dim=-1)
+        ctx = torch.matmul(probs, v)
+        out = self.o_proj(ctx)
+        out = self.norm(out)
+        return self.head(out)
+'''
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source_path = Path(tmpdir) / "toy_fx_model.py"
+            source_path.write_text(source_text)
+            graph = TorchFxGraphBuilder(make_config(), source_path=source_path, model_class="ToyFxModel").build_graph(
+                batch_size=1,
+                seq_len=8,
+            )
+
+        names = [node.name for node in graph.nodes]
+        self.assertIn("embed", names)
+        self.assertIn("q_proj", names)
+        self.assertIn("softmax", names)
+        self.assertIn("head", names)
+        self.assertEqual(graph.metadata["frontend"], "torch_fx")
+        self.assertGreater(graph.node_count(), 5)
+
     def test_generic_builder_adds_cross_attention_when_present(self) -> None:
         source_text = '''
 class MLP:
@@ -251,6 +297,69 @@ class Seq2SeqLM:
         self.assertEqual(config.n_heads, 16)
         self.assertEqual(config.n_kv_heads, 4)
         self.assertEqual(config.dtype, DType.FP16)
+
+    def test_gqa_graph_uses_smaller_kv_projections(self) -> None:
+        source_text = '''
+class SelfAttention:
+    def __init__(self, config):
+        self.q_proj = Linear(config.hidden_size, config.hidden_size)
+        self.k_proj = Linear(config.hidden_size, config.hidden_size)
+        self.v_proj = Linear(config.hidden_size, config.hidden_size)
+        self.o_proj = Linear(config.hidden_size, config.hidden_size)
+
+class MLP:
+    def __init__(self, config):
+        self.gate_proj = Linear(config.hidden_size, config.intermediate_size)
+        self.up_proj = Linear(config.hidden_size, config.intermediate_size)
+        self.down_proj = Linear(config.intermediate_size, config.hidden_size)
+
+class DecoderLayer:
+    def __init__(self, config):
+        self.self_attn = SelfAttention(config)
+        self.mlp = MLP(config)
+        self.input_layernorm = RMSNorm(config.hidden_size)
+        self.post_attention_layernorm = RMSNorm(config.hidden_size)
+
+class ToyLM:
+    def __init__(self, config):
+        self.embed_tokens = Embedding(config.vocab_size, config.hidden_size)
+        self.layers = ModuleList()
+        self.layers.append(DecoderLayer(config))
+        self.norm = RMSNorm(config.hidden_size)
+        self.lm_head = Linear(config.hidden_size, config.vocab_size)
+'''
+        gqa_config = DeepSeekConfig(
+            vocab_size=32000,
+            dim=512,
+            inter_dim=2048,
+            moe_inter_dim=256,
+            n_layers=1,
+            n_dense_layers=1,
+            n_heads=8,
+            n_routed_experts=0,
+            n_shared_experts=0,
+            n_activated_experts=0,
+            qk_rope_head_dim=64,
+            v_head_dim=64,
+            n_kv_heads=2,
+            dtype=DType.BF16,
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source_path = Path(tmpdir) / "toy_model.py"
+            source_path.write_text(source_text)
+            graph = TransformerSourceGraphBuilder(gqa_config, source_path=source_path).build_graph(
+                batch_size=1,
+                seq_len=16,
+                layers=1,
+            )
+
+        q_proj = next(node for node in graph.nodes if node.name == "layer_0_q_proj")
+        k_proj = next(node for node in graph.nodes if node.name == "layer_0_k_proj")
+        attn_scores = next(node for node in graph.nodes if node.name == "layer_0_attn_scores")
+        self.assertGreater(q_proj.outputs[0].size_bytes, k_proj.outputs[0].size_bytes)
+        self.assertEqual(q_proj.attrs["attention_variant"], "gqa")
+        self.assertEqual(q_proj.attrs["num_kv_heads"], 2)
+        self.assertEqual(attn_scores.attrs["attention_variant"], "gqa")
 
     def test_graph_builder_creates_transformer_structure(self) -> None:
         graph = DeepSeekGraphBuilder(make_config()).build_graph(batch_size=1, seq_len=32, layers=2)

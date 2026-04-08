@@ -41,6 +41,11 @@ class NvidiaBackend(Backend):
         utilization = self.calibration.utilization_for(task.op_kind.value)
         if task.attrs.get("uses_fp8", False):
             utilization *= self.calibration.modifier("fp8_utilization_boost", 1.10)
+        attention_variant = task.attrs.get("attention_variant")
+        if attention_variant == "gqa":
+            utilization *= self.calibration.modifier("gqa_utilization_boost", 1.03)
+        elif attention_variant == "mqa":
+            utilization *= self.calibration.modifier("mqa_utilization_boost", 1.05)
         effective_tflops = max(self.hardware.peak_tflops * utilization, 1e-6)
         return task.flops / (effective_tflops * 1e6)
 
@@ -50,5 +55,10 @@ class NvidiaBackend(Backend):
         bandwidth_scale = self.calibration.bandwidth_for(task.op_kind.value)
         if task.attrs.get("moe", False):
             bandwidth_scale *= self.calibration.modifier("moe_bandwidth_penalty", 0.85)
+        attention_variant = task.attrs.get("attention_variant")
+        if attention_variant == "gqa":
+            bandwidth_scale *= self.calibration.modifier("gqa_bandwidth_boost", 1.05)
+        elif attention_variant == "mqa":
+            bandwidth_scale *= self.calibration.modifier("mqa_bandwidth_boost", 1.08)
         effective_bandwidth = max(self.hardware.mem_bandwidth_gbps * bandwidth_scale, 1e-6)
         return task.bytes_moved / (effective_bandwidth * 1e3)

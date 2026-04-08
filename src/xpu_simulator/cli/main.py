@@ -9,7 +9,7 @@ import tempfile
 from ..backends.base import load_hardware_config
 from ..backends import AscendBackend, NvidiaBackend
 from ..calibration import load_backend_calibration, load_benchmark_rows, summarize_benchmark_rows
-from ..frontend import ModelConfig, TransformerSourceGraphBuilder
+from ..frontend import ModelConfig, TorchFxGraphBuilder, TransformerSourceGraphBuilder
 from ..reporting import compare_results, format_comparison, format_summary, result_to_dict
 from ..sim import Simulator
 
@@ -19,10 +19,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model-config", required=True, help="Path to model config JSON")
     parser.add_argument(
         "--model-family",
-        choices=["transformer_source", "deepseek"],
+        choices=["transformer_source", "transformer_fx", "deepseek"],
         default="transformer_source",
-        help="Frontend family to use. Both options currently use the source-driven transformer frontend.",
+        help="Frontend family to use. `transformer_fx` requires an executable PyTorch model class.",
     )
+    parser.add_argument("--model-class", help="Model class name for torch.fx frontend")
     parser.add_argument("--backend", choices=["nvidia", "ascend", "compare"], default="nvidia")
     parser.add_argument("--device-config", help="Optional backend-specific hardware config JSON")
     parser.add_argument("--calibration-config", help="Optional backend-specific calibration JSON")
@@ -48,7 +49,8 @@ def main() -> None:
         print(json.dumps(summary, indent=2))
         return
     config = ModelConfig.from_json(args.model_config)
-    graph = TransformerSourceGraphBuilder(config, source_path=args.model_source).build_graph(
+    graph_builder = _make_graph_builder(args, config)
+    graph = graph_builder.build_graph(
         batch_size=args.batch_size,
         seq_len=args.seq_len,
         layers=args.layers,
@@ -86,6 +88,14 @@ def _make_backend(name: str, device_config: str | None, calibration_config: str 
     if name == "ascend":
         return AscendBackend(hardware=hardware, calibration=calibration)
     raise ValueError(name)
+
+
+def _make_graph_builder(args, config: ModelConfig):
+    if args.model_family == "transformer_fx":
+        if not args.model_source or not args.model_class:
+            raise ValueError("--model-source and --model-class are required for transformer_fx")
+        return TorchFxGraphBuilder(config, source_path=args.model_source, model_class=args.model_class)
+    return TransformerSourceGraphBuilder(config, source_path=args.model_source)
 
 
 if __name__ == "__main__":

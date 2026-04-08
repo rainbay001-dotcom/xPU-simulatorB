@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .deepseek import DeepSeekConfig, DeepSeekGraphBuilder
+from .fx_frontend import TorchFxGraphBuilder
 from .source_analysis import DeepSeekSourceAnalyzer
 
 
@@ -17,3 +18,6 @@ class TransformerSourceGraphBuilder(DeepSeekGraphBuilder):
 class SourceModelAnalyzer(DeepSeekSourceAnalyzer):
     """Generic AST-based analyzer for transformer/LLM model source code."""
 
+
+class TransformerFxGraphBuilder(TorchFxGraphBuilder):
+    """Optional torch.fx-based graph builder for executable transformer models."""
