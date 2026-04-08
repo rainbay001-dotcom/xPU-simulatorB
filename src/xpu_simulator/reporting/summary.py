@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from ..backends.base.types import SimulationResult
 from ..ir.graph import Graph
+from .breakdown import format_breakdown_table, result_breakdown
 
 
 def result_to_dict(graph: Graph, result: SimulationResult) -> dict[str, object]:
@@ -19,6 +20,7 @@ def result_to_dict(graph: Graph, result: SimulationResult) -> dict[str, object]:
         "backend": result.backend_name,
         "device": result.device_name,
         "total_latency_us": result.total_latency_us,
+        "breakdown": result_breakdown(result),
         "kernels": [
             {
                 "name": item.task_name,
@@ -75,7 +77,10 @@ def format_summary(graph: Graph, result: SimulationResult) -> str:
         lines.append(
             f"  - {item.task_name}: {item.total_time_us:.3f} us ({item.bottleneck})"
         )
+    lines.append("")
+    lines.append(format_breakdown_table(result))
     if result.critical_path:
+        lines.append("")
         lines.append("Critical path:")
         lines.append("  " + " -> ".join(result.critical_path[:8]) + (" -> ..." if len(result.critical_path) > 8 else ""))
     return "\n".join(lines)

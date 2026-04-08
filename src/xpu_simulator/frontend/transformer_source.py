@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from .backend_ir_frontend import BackendIrGraphBuilder
 from .deepseek import DeepSeekConfig, DeepSeekGraphBuilder
+from .export_frontend import TorchExportGraphBuilder
 from .fx_frontend import TorchFxGraphBuilder
 from .source_analysis import DeepSeekSourceAnalyzer
 
@@ -21,3 +23,11 @@ class SourceModelAnalyzer(DeepSeekSourceAnalyzer):
 
 class TransformerFxGraphBuilder(TorchFxGraphBuilder):
     """Optional torch.fx-based graph builder for executable transformer models."""
+
+
+class TransformerExportGraphBuilder(TorchExportGraphBuilder):
+    """Optional torch.export-based graph builder for executable transformer models."""
+
+
+class TransformerBackendIrGraphBuilder(BackendIrGraphBuilder):
+    """Frontend for lowered backend/compiler IR JSON."""

@@ -131,9 +131,30 @@ class DeepSeekSourceAnalyzer:
         path = Path(source_path)
         return self.extract_architecture_text(path.read_text())
 
+    def export_architecture(self, source_path: str | Path, config: object | None = None) -> dict[str, object]:
+        summary = self.analyze(source_path)
+        payload = {
+            "source_path": str(Path(source_path)),
+            "architecture": summary.architecture,
+            "source_features": summary.to_metadata(),
+        }
+        if config is not None:
+            payload["config"] = self._config_to_metadata(config)
+        return payload
+
     def extract_architecture_text(self, source_text: str) -> ArchitectureDescriptor:
         tree = ast.parse(source_text)
         return self._extract_architecture_from_tree(tree)
+
+    def export_architecture_text(self, source_text: str, config: object | None = None) -> dict[str, object]:
+        summary = self.analyze_text(source_text)
+        payload = {
+            "architecture": summary.architecture,
+            "source_features": summary.to_metadata(),
+        }
+        if config is not None:
+            payload["config"] = self._config_to_metadata(config)
+        return payload
 
     def _extract_architecture_from_tree(self, tree: ast.AST) -> ArchitectureDescriptor:
         structures = self._collect_class_structures(tree)
@@ -381,3 +402,27 @@ class DeepSeekSourceAnalyzer:
             or "proj" in lowered
             or lowered in {"c_attn", "c_proj", "query", "key", "value"}
         )
+
+    def _config_to_metadata(self, config: object) -> dict[str, object]:
+        keys = [
+            "vocab_size",
+            "dim",
+            "hidden_size",
+            "inter_dim",
+            "intermediate_size",
+            "moe_inter_dim",
+            "n_layers",
+            "num_hidden_layers",
+            "n_dense_layers",
+            "n_heads",
+            "num_attention_heads",
+            "n_kv_heads",
+            "num_key_value_heads",
+            "dtype",
+        ]
+        metadata: dict[str, object] = {}
+        for key in keys:
+            if hasattr(config, key):
+                value = getattr(config, key)
+                metadata[key] = getattr(value, "value", value)
+        return metadata

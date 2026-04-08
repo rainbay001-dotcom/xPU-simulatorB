@@ -1,21 +1,31 @@
 import csv
+import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 
 from xpu_simulator.backends import AscendBackend, NvidiaBackend
 from xpu_simulator.backends.base import load_hardware_config
-from xpu_simulator.calibration import load_backend_calibration, load_benchmark_rows, summarize_benchmark_rows
+from xpu_simulator.calibration import (
+    build_calibration_report,
+    load_backend_calibration,
+    load_benchmark_rows,
+    summarize_benchmark_rows,
+)
 from xpu_simulator.frontend import (
+    BackendIrGraphBuilder,
     DeepSeekConfig,
     DeepSeekGraphBuilder,
     DeepSeekSourceAnalyzer,
     ModelConfig,
     SourceModelAnalyzer,
+    TorchExportGraphBuilder,
     TorchFxGraphBuilder,
     TransformerSourceGraphBuilder,
 )
-from xpu_simulator.reporting import compare_results
+from xpu_simulator.profiling import load_trace_events, summarize_trace_events
+from xpu_simulator.reporting import compare_results, diff_graphs, format_summary, write_html_report
 from xpu_simulator.ir.types import DType
 from xpu_simulator.reporting import result_to_dict
 from xpu_simulator.sim import Simulator
@@ -129,6 +139,34 @@ class DecoderLayer:
         )
         self.assertGreater(graph.node_count(), 0)
         self.assertIn("architecture", graph.metadata)
+
+    def test_source_analyzer_can_export_architecture_payload(self) -> None:
+        source_text = '''
+class MLP:
+    def __init__(self, config):
+        self.gate_proj = Linear(config.hidden_size, config.intermediate_size)
+        self.up_proj = Linear(config.hidden_size, config.intermediate_size)
+        self.down_proj = Linear(config.intermediate_size, config.hidden_size)
+
+class SelfAttention:
+    def __init__(self, config):
+        self.q_proj = Linear(config.hidden_size, config.hidden_size)
+        self.k_proj = Linear(config.hidden_size, config.hidden_size)
+        self.v_proj = Linear(config.hidden_size, config.hidden_size)
+        self.o_proj = Linear(config.hidden_size, config.hidden_size)
+
+class DecoderLayer:
+    def __init__(self, config):
+        self.self_attn = SelfAttention(config)
+        self.mlp = MLP(config)
+        self.input_layernorm = RMSNorm(config.hidden_size)
+'''
+        payload = SourceModelAnalyzer().export_architecture_text(source_text, config=make_config())
+        self.assertIn("architecture", payload)
+        self.assertIn("source_features", payload)
+        self.assertIn("config", payload)
+        self.assertEqual(payload["architecture"]["attention_class"], "SelfAttention")
+        self.assertEqual(payload["config"]["n_heads"], 8)
 
     def test_generic_builder_uses_standard_projection_and_mlp_names(self) -> None:
         source_text = '''
@@ -298,6 +336,150 @@ class Seq2SeqLM:
         self.assertEqual(config.n_kv_heads, 4)
         self.assertEqual(config.dtype, DType.FP16)
 
+    def test_torch_export_builder_exports_executable_model(self) -> None:
+        source_text = '''
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class ToyExportModel(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.embed = nn.Embedding(config.vocab_size, config.hidden_size)
+        self.proj = nn.Linear(config.hidden_size, config.hidden_size)
+        self.head = nn.Linear(config.hidden_size, config.vocab_size)
+
+    def forward(self, input_ids):
+        x = self.embed(input_ids)
+        x = self.proj(x)
+        x = F.softmax(x, dim=-1)
+        return self.head(x)
+'''
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source_path = Path(tmpdir) / "toy_export_model.py"
+            source_path.write_text(source_text)
+            graph = TorchExportGraphBuilder(make_config(), source_path=source_path, model_class="ToyExportModel").build_graph(
+                batch_size=1,
+                seq_len=4,
+            )
+        self.assertEqual(graph.metadata["frontend"], "torch_export")
+        self.assertGreater(graph.node_count(), 3)
+        self.assertTrue(any(node.attrs.get("exported", False) for node in graph.nodes))
+
+    def test_backend_ir_builder_loads_lowered_graph(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ir_path = Path(tmpdir) / "backend_ir.json"
+            ir_path.write_text(
+                """
+{
+  "name": "toy_backend_ir",
+  "nodes": [
+    {
+      "name": "kernel_0",
+      "op_kind": "matmul",
+      "inputs": [{"shape": [1, 8, 16], "dtype": "bf16"}],
+      "outputs": [{"shape": [1, 8, 16], "dtype": "bf16"}],
+      "flops": 4096,
+      "bytes_moved": 1024
+    },
+    {
+      "name": "kernel_1",
+      "op_kind": "softmax",
+      "inputs": [{"shape": [1, 8, 16], "dtype": "bf16"}],
+      "outputs": [{"shape": [1, 8, 16], "dtype": "bf16"}],
+      "flops": 640,
+      "bytes_moved": 512
+    }
+  ],
+  "edges": [{"src": "kernel_0", "dst": "kernel_1"}]
+}
+"""
+            )
+            graph = BackendIrGraphBuilder(ir_path).build_graph()
+        self.assertEqual(graph.metadata["frontend"], "backend_ir")
+        self.assertEqual(graph.node_count(), 2)
+        self.assertEqual(graph.edge_count(), 1)
+
+    def test_graph_diff_reports_frontend_delta(self) -> None:
+        source_path = Path("/Users/ray/Documents/Codex/DeepSeek/DeepSeek-V3.2/inference/model.py")
+        ast_graph = TransformerSourceGraphBuilder(make_config(), source_path=source_path).build_graph(
+            batch_size=1,
+            seq_len=8,
+            layers=1,
+        )
+        payload = diff_graphs(ast_graph, ast_graph)
+        self.assertEqual(payload["node_delta"], 0)
+        self.assertEqual(payload["edge_delta"], 0)
+
+    def test_trace_ingestion_summarizes_profiler_events(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            trace_path = Path(tmpdir) / "trace.json"
+            trace_path.write_text(
+                """
+{
+  "traceEvents": [
+    {"name": "aten::matmul", "ph": "X", "dur": 12.5, "cat": "cpu_op"},
+    {"name": "aten::matmul", "ph": "X", "dur": 10.0, "cat": "cpu_op"},
+    {"name": "aten::softmax", "ph": "X", "dur": 4.0, "cat": "cpu_op"}
+  ]
+}
+"""
+            )
+            events = load_trace_events(trace_path)
+            summary = summarize_trace_events(events)
+        self.assertEqual(summary["event_count"], 3)
+        self.assertIn("aten::matmul", summary["ops"])
+        self.assertGreater(summary["ops"]["aten::matmul"]["total_duration_us"], 20.0)
+
+    def test_cli_can_export_architecture_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out_path = Path(tmpdir) / "architecture.json"
+            subprocess.check_call(
+                [
+                    "python3",
+                    "-m",
+                    "xpu_simulator.cli.main",
+                    "--model-config",
+                    "/Users/ray/Documents/Codex/DeepSeek/DeepSeek-V3.2/inference/config_671B_v3.2.json",
+                    "--model-source",
+                    "/Users/ray/Documents/Codex/DeepSeek/DeepSeek-V3.2/inference/model.py",
+                    "--export-architecture",
+                    str(out_path),
+                ],
+                cwd="/Users/ray/Documents/Repo/xPU-simulatorB",
+                env={"PYTHONPATH": "src"},
+            )
+            payload = json.loads(out_path.read_text())
+        self.assertIn("architecture", payload)
+        self.assertIn("source_features", payload)
+        self.assertIn("config", payload)
+        self.assertEqual(payload["architecture"]["model_class"], "Transformer")
+
+    def test_calibration_report_produces_recommendations(self) -> None:
+        rows = [
+            load_benchmark_rows(Path(tempfile.mkdtemp()) / "missing.csv") if False else None
+        ]
+        del rows
+        benchmark_rows = [
+            type("Row", (), {
+                "op_name": "softmax",
+                "measured_time_us": 20.0,
+                "predicted_time_us": 10.0,
+                "bytes_moved": 1024.0,
+                "flops": 512.0,
+            })(),
+            type("Row", (), {
+                "op_name": "softmax",
+                "measured_time_us": 10.0,
+                "predicted_time_us": 10.0,
+                "bytes_moved": 1024.0,
+                "flops": 512.0,
+            })(),
+        ]
+        report = build_calibration_report(benchmark_rows)
+        self.assertIn("softmax", report["recommendations"])
+        self.assertGreater(report["recommendations"]["softmax"]["error_ratio"], 1.0)
+
     def test_gqa_graph_uses_smaller_kv_projections(self) -> None:
         source_text = '''
 class SelfAttention:
@@ -401,7 +583,28 @@ class ToyLM:
         self.assertIn("source_features", payload["graph"]["metadata"])
         self.assertIn("critical_path", payload)
         self.assertIn("memory", payload)
+        self.assertIn("breakdown", payload)
+        self.assertIn("by_family", payload["breakdown"])
         self.assertGreater(payload["memory"]["peak_live_bytes"], 0)
+
+    def test_text_summary_contains_breakdown_table(self) -> None:
+        graph = DeepSeekGraphBuilder(make_config()).build_graph(batch_size=1, seq_len=8, layers=1)
+        result = Simulator().simulate(graph, NvidiaBackend())
+        summary = format_summary(graph, result)
+        self.assertIn("Breakdown:", summary)
+        self.assertIn("Top families", summary)
+
+    def test_html_report_writer_generates_layer_annotated_report(self) -> None:
+        graph = DeepSeekGraphBuilder(make_config()).build_graph(batch_size=1, seq_len=8, layers=1)
+        result = Simulator().simulate(graph, AscendBackend())
+        with tempfile.TemporaryDirectory() as tmpdir:
+            html_path = Path(tmpdir) / "report.html"
+            write_html_report(graph, result, html_path)
+            html = html_path.read_text()
+        self.assertIn(graph.name, html)
+        self.assertIn("Architecture Timeline", html)
+        self.assertIn("layer_0", html)
+        self.assertIn("layer_0_attn_scores", html)
 
     def test_layer_start_can_target_moe_layers(self) -> None:
         graph = DeepSeekGraphBuilder(make_config()).build_graph(batch_size=1, seq_len=8, layers=2, layer_start=2)
