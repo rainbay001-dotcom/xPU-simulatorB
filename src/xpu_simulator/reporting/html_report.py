@@ -27,6 +27,8 @@ def render_html_report(graph: Graph, result: SimulationResult) -> str:
         record = {
             "name": item.task_name,
             "total_time_us": item.total_time_us,
+            "start_time_us": item.start_time_us,
+            "end_time_us": item.end_time_us,
             "resource": item.resource,
             "bottleneck": item.bottleneck,
             "family": kernel_family(item.task_name),
@@ -45,16 +47,59 @@ def render_html_report(graph: Graph, result: SimulationResult) -> str:
   <meta charset="utf-8">
   <title>{escape(graph.name)} simulation report</title>
   <style>
-    body {{ font-family: Menlo, Monaco, Consolas, monospace; margin: 24px; color: #18222d; background: #f6f1e8; }}
-    h1, h2, h3 {{ margin-bottom: 8px; }}
+    :root {{
+      --paper: #f5efe2;
+      --ink: #1f2a2d;
+      --muted: #677074;
+      --frame: #cdbd9d;
+      --card: #fffaf0;
+      --compute: #c86b3c;
+      --memory: #2e7d74;
+      --communication: #7d5ab5;
+      --bottleneck-compute: #f6d5bb;
+      --bottleneck-memory: #cfe9e4;
+      --bottleneck-communication: #ddd3f2;
+      --layer-band: #e9ddc7;
+      --preamble-band: #d7e2c4;
+      --output-band: #e3d0b8;
+    }}
+    body {{ font-family: Georgia, 'Iowan Old Style', 'Palatino Linotype', serif; margin: 24px; color: var(--ink); background:
+      radial-gradient(circle at top left, rgba(255,255,255,0.45), transparent 28%),
+      linear-gradient(180deg, #f7f1e4 0%, #efe5d4 100%); }}
+    h1, h2, h3 {{ margin-bottom: 8px; font-family: 'Baskerville', 'Times New Roman', serif; letter-spacing: 0.02em; }}
     .grid {{ display: grid; grid-template-columns: repeat(2, minmax(280px, 1fr)); gap: 16px; margin-bottom: 24px; }}
-    .card {{ background: #fffdf8; border: 1px solid #d8ccbb; padding: 16px; border-radius: 10px; }}
-    table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
+    .card {{ background: linear-gradient(180deg, rgba(255,252,246,0.97), rgba(252,246,235,0.97)); border: 1px solid var(--frame); padding: 16px; border-radius: 14px; box-shadow: 0 8px 22px rgba(88, 69, 41, 0.08); }}
+    table {{ width: 100%; border-collapse: collapse; font-size: 13px; font-family: Menlo, Monaco, Consolas, monospace; }}
     th, td {{ padding: 6px 8px; border-bottom: 1px solid #eadfce; text-align: left; }}
     th {{ background: #f0e6d7; }}
     details {{ margin: 10px 0; background: #fffdf8; border: 1px solid #d8ccbb; border-radius: 10px; padding: 10px 14px; }}
     summary {{ cursor: pointer; font-weight: 700; }}
-    .muted {{ color: #6a7178; }}
+    .muted {{ color: var(--muted); }}
+    .arch-legend {{ display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0 16px 0; }}
+    .legend-chip {{ display: inline-flex; align-items: center; gap: 8px; padding: 6px 10px; border: 1px solid var(--frame); border-radius: 999px; background: rgba(255,255,255,0.55); font-size: 12px; font-family: Menlo, Monaco, Consolas, monospace; }}
+    .swatch {{ width: 12px; height: 12px; border-radius: 999px; display: inline-block; }}
+    .arch-graph {{ display: flex; flex-wrap: nowrap; gap: 18px; align-items: stretch; overflow-x: auto; padding: 8px 2px 18px 2px; }}
+    .stage-box {{ min-width: 290px; max-width: 350px; background: linear-gradient(180deg, rgba(255,253,248,0.96), rgba(252,245,233,0.96)); border: 1px solid var(--frame); border-radius: 14px; padding: 0; box-shadow: 0 6px 16px rgba(96, 73, 44, 0.08); overflow: hidden; }}
+    .stage-box h3 {{ margin: 0; }}
+    .stage-header {{ padding: 12px 14px; border-bottom: 1px solid rgba(140,118,82,0.18); }}
+    .stage-header.stage-layer {{ background: linear-gradient(180deg, var(--layer-band), #f0e6d7); }}
+    .stage-header.stage-preamble {{ background: linear-gradient(180deg, var(--preamble-band), #e6edd7); }}
+    .stage-header.stage-output {{ background: linear-gradient(180deg, var(--output-band), #eddcc8); }}
+    .stage-body {{ padding: 10px 12px 12px 12px; }}
+    .stage-meta {{ font-size: 12px; color: var(--muted); margin-top: 4px; margin-bottom: 2px; font-family: Menlo, Monaco, Consolas, monospace; }}
+    .kernel-node {{ border-radius: 10px; padding: 10px; margin: 10px 0; border-left: 6px solid var(--compute); box-shadow: inset 0 0 0 1px rgba(120, 99, 66, 0.12); }}
+    .kernel-node.resource-compute {{ border-left-color: var(--compute); }}
+    .kernel-node.resource-memory {{ border-left-color: var(--memory); }}
+    .kernel-node.resource-communication {{ border-left-color: var(--communication); }}
+    .kernel-node.bottleneck-compute {{ background: linear-gradient(180deg, var(--bottleneck-compute), #fbf2e7); }}
+    .kernel-node.bottleneck-memory {{ background: linear-gradient(180deg, var(--bottleneck-memory), #f0faf7); }}
+    .kernel-node.bottleneck-communication {{ background: linear-gradient(180deg, var(--bottleneck-communication), #f6f2fd); }}
+    .kernel-node strong {{ display: block; margin-bottom: 2px; }}
+    .kernel-time {{ font-size: 18px; font-weight: 700; margin: 3px 0 6px 0; font-family: Menlo, Monaco, Consolas, monospace; }}
+    .kernel-tags {{ display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }}
+    .tag {{ display: inline-block; padding: 2px 7px; border-radius: 999px; font-size: 11px; font-family: Menlo, Monaco, Consolas, monospace; background: rgba(255,255,255,0.58); border: 1px solid rgba(110,90,57,0.18); }}
+    .kernel-meta {{ font-size: 12px; color: #5b6470; font-family: Menlo, Monaco, Consolas, monospace; }}
+    .arrow {{ font-size: 34px; color: #9a8667; align-self: center; padding: 0 2px; }}
   </style>
 </head>
 <body>
@@ -86,6 +131,13 @@ def render_html_report(graph: Graph, result: SimulationResult) -> str:
       <h2>Top Kernel Families</h2>
       {_family_table(breakdown["by_family"][:12])}
     </div>
+  </div>
+
+  <div class="card">
+    <h2>Architecture Graph</h2>
+    <p class="muted">Model stages are grouped by layer. Node border color shows resource class, and node fill color shows the dominant bottleneck.</p>
+    {_graph_legend()}
+    {_architecture_graph(preamble, layer_kernels, epilogue, result.total_latency_us)}
   </div>
 
   <div class="card">
@@ -123,6 +175,71 @@ def _kernel_table(rows: list[dict[str, object]], title: str) -> str:
         for row in rows
     )
     return f"<h3>{escape(title)}</h3><table><tr><th>Kernel</th><th>Family</th><th>Total us</th><th>Resource</th><th>Bottleneck</th></tr>{body}</table>"
+
+
+def _architecture_graph(
+    preamble: list[dict[str, object]],
+    layer_kernels: dict[str, list[dict[str, object]]],
+    epilogue: list[dict[str, object]],
+    total_latency_us: float,
+) -> str:
+    stages: list[str] = []
+    if preamble:
+        stages.append(_stage_box("Preamble", preamble, total_latency_us))
+    for layer_name in sorted(layer_kernels, key=lambda value: int(value.split("_")[1])):
+        stages.append(_stage_box(layer_name, layer_kernels[layer_name], total_latency_us))
+    if epilogue:
+        stages.append(_stage_box("Output", epilogue, total_latency_us))
+    if not stages:
+        return "<p class='muted'>No stage data available.</p>"
+    return "<div class='arch-graph'>" + "<div class='arrow'>&rarr;</div>".join(stages) + "</div>"
+
+
+def _stage_box(title: str, kernels: list[dict[str, object]], total_latency_us: float) -> str:
+    stage_total = sum(float(row["total_time_us"]) for row in kernels)
+    share = (stage_total / total_latency_us * 100) if total_latency_us else 0.0
+    stage_kind = "stage-layer"
+    if title == "Preamble":
+        stage_kind = "stage-preamble"
+    elif title == "Output":
+        stage_kind = "stage-output"
+    body = "\n".join(
+        _kernel_node(row)
+        for row in sorted(kernels, key=lambda row: float(row["start_time_us"]))
+    )
+    return (
+        "<section class='stage-box'>"
+        f"<div class='stage-header {stage_kind}'><h3>{escape(title)}</h3>"
+        f"<div class='stage-meta'>{stage_total:.3f} us, {share:.2f}% of wall time, {len(kernels)} kernels</div></div>"
+        f"<div class='stage-body'>{body}</div>"
+        "</section>"
+    )
+
+
+def _kernel_node(row: dict[str, object]) -> str:
+    resource = escape(str(row["resource"]))
+    bottleneck = escape(str(row["bottleneck"]))
+    return (
+        f"<div class='kernel-node resource-{resource} bottleneck-{bottleneck}'>"
+        f"<strong>{escape(str(row['name']))}</strong>"
+        f"<div class='kernel-time'>{row['total_time_us']:.3f} us</div>"
+        f"<div class='kernel-tags'><span class='tag'>{escape(str(row['family']))}</span><span class='tag'>{resource}</span><span class='tag'>{bottleneck}</span></div>"
+        f"<div class='kernel-meta'>start={float(row['start_time_us']):.3f} us | end={float(row['end_time_us']):.3f} us</div>"
+        "</div>"
+    )
+
+
+def _graph_legend() -> str:
+    return (
+        "<div class='arch-legend'>"
+        "<div class='legend-chip'><span class='swatch' style='background: var(--compute)'></span>resource: compute</div>"
+        "<div class='legend-chip'><span class='swatch' style='background: var(--memory)'></span>resource: memory</div>"
+        "<div class='legend-chip'><span class='swatch' style='background: var(--communication)'></span>resource: communication</div>"
+        "<div class='legend-chip'><span class='swatch' style='background: var(--bottleneck-compute)'></span>bottleneck: compute</div>"
+        "<div class='legend-chip'><span class='swatch' style='background: var(--bottleneck-memory)'></span>bottleneck: memory</div>"
+        "<div class='legend-chip'><span class='swatch' style='background: var(--bottleneck-communication)'></span>bottleneck: communication</div>"
+        "</div>"
+    )
 
 
 def _layer_sections(layer_kernels: dict[str, list[dict[str, object]]], total_latency_us: float) -> str:
