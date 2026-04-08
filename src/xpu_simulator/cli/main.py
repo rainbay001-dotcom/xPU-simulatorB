@@ -9,14 +9,20 @@ import tempfile
 from ..backends.base import load_hardware_config
 from ..backends import AscendBackend, NvidiaBackend
 from ..calibration import load_backend_calibration, load_benchmark_rows, summarize_benchmark_rows
-from ..frontend import DeepSeekConfig, DeepSeekGraphBuilder
+from ..frontend import ModelConfig, TransformerSourceGraphBuilder
 from ..reporting import compare_results, format_comparison, format_summary, result_to_dict
 from ..sim import Simulator
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="xPU simulator scaffold")
-    parser.add_argument("--model-config", required=True, help="Path to DeepSeek-style config JSON")
+    parser.add_argument("--model-config", required=True, help="Path to model config JSON")
+    parser.add_argument(
+        "--model-family",
+        choices=["transformer_source", "deepseek"],
+        default="transformer_source",
+        help="Frontend family to use. Both options currently use the source-driven transformer frontend.",
+    )
     parser.add_argument("--backend", choices=["nvidia", "ascend", "compare"], default="nvidia")
     parser.add_argument("--device-config", help="Optional backend-specific hardware config JSON")
     parser.add_argument("--calibration-config", help="Optional backend-specific calibration JSON")
@@ -25,7 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--nvidia-calibration-config", help="Optional NVIDIA calibration JSON for compare mode")
     parser.add_argument("--ascend-device-config", help="Optional Ascend hardware config JSON for compare mode")
     parser.add_argument("--ascend-calibration-config", help="Optional Ascend calibration JSON for compare mode")
-    parser.add_argument("--model-source", help="Path to DeepSeek model.py for AST-based feature extraction")
+    parser.add_argument("--model-source", help="Path to model source file for AST-based architecture extraction")
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--seq-len", type=int, default=128)
     parser.add_argument("--layer-start", type=int, default=0)
@@ -41,8 +47,8 @@ def main() -> None:
         summary = summarize_benchmark_rows(load_benchmark_rows(args.benchmark_csv))
         print(json.dumps(summary, indent=2))
         return
-    config = DeepSeekConfig.from_json(args.model_config)
-    graph = DeepSeekGraphBuilder(config, source_path=args.model_source).build_graph(
+    config = ModelConfig.from_json(args.model_config)
+    graph = TransformerSourceGraphBuilder(config, source_path=args.model_source).build_graph(
         batch_size=args.batch_size,
         seq_len=args.seq_len,
         layers=args.layers,

@@ -27,6 +27,9 @@ class ArchitectureDescriptor:
     norm_attr: str | None
     head_attr: str | None
     block_norm_attrs: list[str]
+    block_attention_attr: str | None
+    block_cross_attention_attr: str | None
+    block_ffn_attr: str | None
     attention_traits: dict[str, object]
     dense_ffn_traits: dict[str, object]
     moe_ffn_traits: dict[str, object]
@@ -43,6 +46,9 @@ class ArchitectureDescriptor:
             "norm_attr": self.norm_attr,
             "head_attr": self.head_attr,
             "block_norm_attrs": self.block_norm_attrs,
+            "block_attention_attr": self.block_attention_attr,
+            "block_cross_attention_attr": self.block_cross_attention_attr,
+            "block_ffn_attr": self.block_ffn_attr,
             "attention_traits": self.attention_traits,
             "dense_ffn_traits": self.dense_ffn_traits,
             "moe_ffn_traits": self.moe_ffn_traits,
@@ -82,7 +88,10 @@ class SourceFeatureSummary:
 class DeepSeekSourceAnalyzer:
     def analyze(self, source_path: str | Path) -> SourceFeatureSummary:
         path = Path(source_path)
-        tree = ast.parse(path.read_text())
+        return self.analyze_text(path.read_text())
+
+    def analyze_text(self, source_text: str) -> SourceFeatureSummary:
+        tree = ast.parse(source_text)
         architecture = self._extract_architecture_from_tree(tree)
 
         classes = sorted(node.name for node in ast.walk(tree) if isinstance(node, ast.ClassDef))
@@ -103,12 +112,13 @@ class DeepSeekSourceAnalyzer:
             classes=classes,
             functions=functions,
             uses_fp8=any(symbol in all_symbols for symbol in {"fp8_gemm", "act_quant", "float8_e4m3fn", "fp8_index"}),
-            uses_moe=any(symbol in all_symbols for symbol in {"Gate", "MoE", "topk", "n_routed_experts"}),
-            uses_rotary=any(symbol in all_symbols for symbol in {"apply_rotary_emb", "precompute_freqs_cis", "rope_theta"}),
+            uses_moe=any(symbol in all_symbols for symbol in {"Gate", "MoE", "topk", "n_routed_experts", "shared_experts"}),
+            uses_rotary=any(symbol in all_symbols for symbol in {"apply_rotary_emb", "precompute_freqs_cis", "rope_theta", "rotary_emb"}),
             uses_distributed=any(symbol in all_symbols for symbol in {"dist", "all_reduce", "broadcast", "world_size"}),
             uses_topk="topk" in all_symbols,
             parallel_linears=parallel_linears,
-            block_components=architecture.block_norm_attrs + [name for name in ["attn", "ffn"] if name],
+            block_components=architecture.block_norm_attrs
+            + [value for value in [architecture.block_attention_attr, architecture.block_ffn_attr] if value],
             transformer_components=[
                 value
                 for value in [architecture.embedding_attr, architecture.layers_attr, architecture.norm_attr, architecture.head_attr]
@@ -119,7 +129,10 @@ class DeepSeekSourceAnalyzer:
 
     def extract_architecture(self, source_path: str | Path) -> ArchitectureDescriptor:
         path = Path(source_path)
-        tree = ast.parse(path.read_text())
+        return self.extract_architecture_text(path.read_text())
+
+    def extract_architecture_text(self, source_text: str) -> ArchitectureDescriptor:
+        tree = ast.parse(source_text)
         return self._extract_architecture_from_tree(tree)
 
     def _extract_architecture_from_tree(self, tree: ast.AST) -> ArchitectureDescriptor:
@@ -130,15 +143,18 @@ class DeepSeekSourceAnalyzer:
         block_class = None
         if model_structure and layers_attr:
             block_class = model_structure.append_calls.get(layers_attr)
-        if block_class is None and "Block" in structures:
-            block_class = "Block"
+        if block_class is None:
+            block_class = self._infer_block_class(structures)
         block_structure = structures.get(block_class) if block_class else None
 
-        attention_class = block_structure.assignments.get("attn") if block_structure else None
-        ffn_variants = block_structure.conditional_assignments.get("ffn", []) if block_structure else []
+        block_attention_attr = self._find_attr_like(block_structure, {"attn", "attention", "self_attn"})
+        attention_class = block_structure.assignments.get(block_attention_attr) if (block_structure and block_attention_attr) else None
+        block_cross_attention_attr = self._find_attr_like(block_structure, {"cross_attn", "cross_attention", "encoder_attn"})
+        block_ffn_attr = self._find_attr_like(block_structure, {"ffn", "mlp", "feed_forward", "feedforward", "moe"})
+        ffn_variants = block_structure.conditional_assignments.get(block_ffn_attr, []) if (block_structure and block_ffn_attr) else []
         dense_ffn_class, moe_ffn_class = self._infer_ffn_variants(ffn_variants, structures)
         if dense_ffn_class is None and block_structure:
-            assigned_ffn = block_structure.assignments.get("ffn")
+            assigned_ffn = block_structure.assignments.get(block_ffn_attr) if block_ffn_attr else None
             if assigned_ffn and self._class_traits(structures.get(assigned_ffn)).get("is_moe", False):
                 moe_ffn_class = assigned_ffn
             else:
@@ -167,6 +183,9 @@ class DeepSeekSourceAnalyzer:
             norm_attr=norm_attr,
             head_attr=head_attr,
             block_norm_attrs=sorted(block_norm_attrs),
+            block_attention_attr=block_attention_attr,
+            block_cross_attention_attr=block_cross_attention_attr,
+            block_ffn_attr=block_ffn_attr,
             attention_traits=self._attention_traits(structures.get(attention_class)),
             dense_ffn_traits=self._class_traits(structures.get(dense_ffn_class)),
             moe_ffn_traits=self._class_traits(structures.get(moe_ffn_class)),
@@ -249,6 +268,9 @@ class DeepSeekSourceAnalyzer:
         for name, structure in structures.items():
             if "layers" in structure.assignments or "layers" in structure.append_calls:
                 return name
+        for name, structure in structures.items():
+            if self._find_attr_like(structure, {"embed", "embedding"}) and self._find_attr_like(structure, {"head", "lm_head"}):
+                return name
         return None
 
     def _infer_layers_attr(self, structure: ClassStructure | None) -> str | None:
@@ -259,6 +281,17 @@ class DeepSeekSourceAnalyzer:
         for attr, ctor in structure.assignments.items():
             if ctor == "ModuleList" or "layer" in attr:
                 return attr
+        return None
+
+    def _infer_block_class(self, structures: dict[str, ClassStructure]) -> str | None:
+        if "Block" in structures:
+            return "Block"
+        for name, structure in structures.items():
+            attrs = set(structure.assignments) | set(structure.conditional_assignments)
+            if any(fragment in attr for attr in attrs for fragment in ("attn", "attention")) and any(
+                fragment in attr for attr in attrs for fragment in ("mlp", "ffn", "feed")
+            ):
+                return name
         return None
 
     def _infer_ffn_variants(
@@ -297,22 +330,27 @@ class DeepSeekSourceAnalyzer:
         if structure is None:
             return None
         for attr in structure.assignments:
-            if any(fragment in attr for fragment in fragments):
+            if any(fragment in attr.lower() for fragment in fragments):
+                return attr
+        for attr in structure.conditional_assignments:
+            if any(fragment in attr.lower() for fragment in fragments):
                 return attr
         return None
 
     def _attention_traits(self, structure: ClassStructure | None) -> dict[str, object]:
         if structure is None:
             return {}
-        projection_attrs = [
-            attr for attr in structure.assignments
-            if attr.startswith("w") and attr not in {"weight"}
-        ]
+        attrs = set(structure.assignments)
+        projection_attrs = [attr for attr in structure.assignments if self._is_attention_projection_attr(attr)]
         return {
             "has_q_norm": "q_norm" in structure.assignments,
             "has_kv_norm": "kv_norm" in structure.assignments,
-            "has_output_proj": any(attr in structure.assignments for attr in {"wo", "out_proj", "o_proj"}),
+            "has_q_proj": any(fragment in attrs for fragment in {"q_proj", "wq", "wq_a", "wq_b", "query_proj"}),
+            "has_k_proj": any(fragment in attrs for fragment in {"k_proj", "wk", "wkv_a", "key_proj"}),
+            "has_v_proj": any(fragment in attrs for fragment in {"v_proj", "wv", "wkv_b", "value_proj"}),
+            "has_output_proj": any(attr in structure.assignments for attr in {"wo", "out_proj", "o_proj", "proj_out"}),
             "has_indexer": "indexer" in structure.assignments,
+            "has_qkv_fused": any(fragment in attrs for fragment in {"qkv_proj", "c_attn", "wqkv"}),
             "projection_attrs": projection_attrs,
             "projection_count": len(projection_attrs),
         }
@@ -323,6 +361,23 @@ class DeepSeekSourceAnalyzer:
         attrs = set(structure.assignments)
         return {
             "is_moe": bool({"gate", "experts", "shared_experts"} & attrs),
-            "has_gate_branch": {"w1", "w2", "w3"} <= attrs,
+            "has_gate_branch": bool(
+                {"w1", "w2", "w3"} <= attrs
+                or {"gate_proj", "up_proj", "down_proj"} <= attrs
+                or {"gate", "up", "down"} <= attrs
+            ),
+            "gate_attrs": [
+                attr for attr in structure.assignments
+                if attr in {"w1", "w2", "w3", "gate_proj", "up_proj", "down_proj", "gate", "up", "down"}
+            ],
             "assignments": sorted(attrs),
         }
+
+    def _is_attention_projection_attr(self, attr: str) -> bool:
+        lowered = attr.lower()
+        return (
+            lowered.startswith("w")
+            or lowered.endswith("_proj")
+            or "proj" in lowered
+            or lowered in {"c_attn", "c_proj", "query", "key", "value"}
+        )

@@ -1,4 +1,14 @@
 from .deepseek import DeepSeekConfig, DeepSeekGraphBuilder
-from .source_analysis import DeepSeekSourceAnalyzer, SourceFeatureSummary
+from .source_analysis import ArchitectureDescriptor, DeepSeekSourceAnalyzer, SourceFeatureSummary
+from .transformer_source import ModelConfig, SourceModelAnalyzer, TransformerSourceGraphBuilder
 
-__all__ = ["DeepSeekConfig", "DeepSeekGraphBuilder", "DeepSeekSourceAnalyzer", "SourceFeatureSummary"]
+__all__ = [
+    "ArchitectureDescriptor",
+    "DeepSeekConfig",
+    "DeepSeekGraphBuilder",
+    "DeepSeekSourceAnalyzer",
+    "ModelConfig",
+    "SourceFeatureSummary",
+    "SourceModelAnalyzer",
+    "TransformerSourceGraphBuilder",
+]

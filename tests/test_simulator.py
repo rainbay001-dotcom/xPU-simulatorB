@@ -6,7 +6,14 @@ from pathlib import Path
 from xpu_simulator.backends import AscendBackend, NvidiaBackend
 from xpu_simulator.backends.base import load_hardware_config
 from xpu_simulator.calibration import load_backend_calibration, load_benchmark_rows, summarize_benchmark_rows
-from xpu_simulator.frontend import DeepSeekConfig, DeepSeekGraphBuilder, DeepSeekSourceAnalyzer
+from xpu_simulator.frontend import (
+    DeepSeekConfig,
+    DeepSeekGraphBuilder,
+    DeepSeekSourceAnalyzer,
+    ModelConfig,
+    SourceModelAnalyzer,
+    TransformerSourceGraphBuilder,
+)
 from xpu_simulator.reporting import compare_results
 from xpu_simulator.ir.types import DType
 from xpu_simulator.reporting import result_to_dict
@@ -27,6 +34,7 @@ def make_config() -> DeepSeekConfig:
         n_activated_experts=4,
         qk_rope_head_dim=64,
         v_head_dim=64,
+        n_kv_heads=8,
         dtype=DType.BF16,
     )
 
@@ -41,6 +49,208 @@ class SimulatorScaffoldTests(unittest.TestCase):
         self.assertIn("ColumnParallelLinear", summary.parallel_linears)
         self.assertIn("attn", summary.block_components)
         self.assertIn("layers", summary.transformer_components)
+
+    def test_source_analyzer_handles_standard_transformer_naming(self) -> None:
+        source_text = '''
+class MLP:
+    def __init__(self, config):
+        self.gate_proj = Linear(config.hidden_size, config.intermediate_size)
+        self.up_proj = Linear(config.hidden_size, config.intermediate_size)
+        self.down_proj = Linear(config.intermediate_size, config.hidden_size)
+
+class SelfAttention:
+    def __init__(self, config):
+        self.q_proj = Linear(config.hidden_size, config.hidden_size)
+        self.k_proj = Linear(config.hidden_size, config.hidden_size)
+        self.v_proj = Linear(config.hidden_size, config.hidden_size)
+        self.o_proj = Linear(config.hidden_size, config.hidden_size)
+
+class DecoderLayer:
+    def __init__(self, config):
+        self.self_attn = SelfAttention(config)
+        self.mlp = MLP(config)
+        self.input_layernorm = RMSNorm(config.hidden_size)
+        self.post_attention_layernorm = RMSNorm(config.hidden_size)
+
+class ToyLM:
+    def __init__(self, config):
+        self.embed_tokens = Embedding(config.vocab_size, config.hidden_size)
+        self.layers = ModuleList()
+        self.layers.append(DecoderLayer(config))
+        self.norm = RMSNorm(config.hidden_size)
+        self.lm_head = Linear(config.hidden_size, config.vocab_size)
+'''
+        summary = SourceModelAnalyzer().analyze_text(source_text)
+        architecture = summary.architecture
+        self.assertEqual(architecture["model_class"], "ToyLM")
+        self.assertEqual(architecture["block_class"], "DecoderLayer")
+        self.assertEqual(architecture["attention_class"], "SelfAttention")
+        self.assertEqual(architecture["dense_ffn_class"], "MLP")
+        self.assertEqual(architecture["block_attention_attr"], "self_attn")
+        self.assertEqual(architecture["block_ffn_attr"], "mlp")
+        self.assertTrue(architecture["attention_traits"]["has_q_proj"])
+        self.assertTrue(architecture["attention_traits"]["has_k_proj"])
+        self.assertTrue(architecture["attention_traits"]["has_v_proj"])
+        self.assertTrue(architecture["dense_ffn_traits"]["has_gate_branch"])
+
+    def test_source_analyzer_detects_cross_attention_blocks(self) -> None:
+        source_text = '''
+class CrossAttention:
+    def __init__(self, config):
+        self.q_proj = Linear(config.hidden_size, config.hidden_size)
+        self.k_proj = Linear(config.hidden_size, config.hidden_size)
+        self.v_proj = Linear(config.hidden_size, config.hidden_size)
+        self.o_proj = Linear(config.hidden_size, config.hidden_size)
+
+class DecoderLayer:
+    def __init__(self, config):
+        self.self_attn = CrossAttention(config)
+        self.encoder_attn = CrossAttention(config)
+        self.mlp = MLP(config)
+        self.input_layernorm = RMSNorm(config.hidden_size)
+'''
+        architecture = SourceModelAnalyzer().analyze_text(source_text).architecture
+        self.assertEqual(architecture["block_cross_attention_attr"], "encoder_attn")
+
+    def test_generic_frontend_aliases_match_deepseek_frontend(self) -> None:
+        source_path = Path("/Users/ray/Documents/Codex/DeepSeek/DeepSeek-V3.2/inference/model.py")
+        generic_summary = SourceModelAnalyzer().analyze(source_path)
+        deepseek_summary = DeepSeekSourceAnalyzer().analyze(source_path)
+        self.assertEqual(generic_summary.architecture, deepseek_summary.architecture)
+
+        generic_config = ModelConfig.from_json(
+            "/Users/ray/Documents/Codex/DeepSeek/DeepSeek-V3.2/inference/config_671B_v3.2.json"
+        )
+        graph = TransformerSourceGraphBuilder(generic_config, source_path=source_path).build_graph(
+            batch_size=1,
+            seq_len=16,
+            layers=1,
+        )
+        self.assertGreater(graph.node_count(), 0)
+        self.assertIn("architecture", graph.metadata)
+
+    def test_generic_builder_uses_standard_projection_and_mlp_names(self) -> None:
+        source_text = '''
+class MLP:
+    def __init__(self, config):
+        self.gate_proj = Linear(config.hidden_size, config.intermediate_size)
+        self.up_proj = Linear(config.hidden_size, config.intermediate_size)
+        self.down_proj = Linear(config.intermediate_size, config.hidden_size)
+
+class SelfAttention:
+    def __init__(self, config):
+        self.q_proj = Linear(config.hidden_size, config.hidden_size)
+        self.k_proj = Linear(config.hidden_size, config.hidden_size)
+        self.v_proj = Linear(config.hidden_size, config.hidden_size)
+        self.o_proj = Linear(config.hidden_size, config.hidden_size)
+
+class DecoderLayer:
+    def __init__(self, config):
+        self.self_attn = SelfAttention(config)
+        self.mlp = MLP(config)
+        self.input_layernorm = RMSNorm(config.hidden_size)
+        self.post_attention_layernorm = RMSNorm(config.hidden_size)
+
+class ToyLM:
+    def __init__(self, config):
+        self.embed_tokens = Embedding(config.vocab_size, config.hidden_size)
+        self.layers = ModuleList()
+        self.layers.append(DecoderLayer(config))
+        self.norm = RMSNorm(config.hidden_size)
+        self.lm_head = Linear(config.hidden_size, config.vocab_size)
+'''
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source_path = Path(tmpdir) / "toy_model.py"
+            source_path.write_text(source_text)
+            graph = TransformerSourceGraphBuilder(make_config(), source_path=source_path).build_graph(
+                batch_size=1,
+                seq_len=16,
+                layers=1,
+            )
+
+        names = [node.name for node in graph.nodes]
+        self.assertIn("layer_0_q_proj", names)
+        self.assertIn("layer_0_k_proj", names)
+        self.assertIn("layer_0_v_proj", names)
+        self.assertIn("layer_0_attn_proj_merge", names)
+        self.assertIn("layer_0_o_proj", names)
+        self.assertIn("layer_0_up_proj", names)
+        self.assertIn("layer_0_gate_proj", names)
+        self.assertIn("layer_0_down_proj", names)
+        self.assertIn("layer_0_q_proj", graph.predecessors("layer_0_attn_proj_merge"))
+        self.assertIn("layer_0_k_proj", graph.predecessors("layer_0_attn_proj_merge"))
+        self.assertIn("layer_0_v_proj", graph.predecessors("layer_0_attn_proj_merge"))
+
+    def test_generic_builder_adds_cross_attention_when_present(self) -> None:
+        source_text = '''
+class MLP:
+    def __init__(self, config):
+        self.gate_proj = Linear(config.hidden_size, config.intermediate_size)
+        self.up_proj = Linear(config.hidden_size, config.intermediate_size)
+        self.down_proj = Linear(config.intermediate_size, config.hidden_size)
+
+class CrossAttention:
+    def __init__(self, config):
+        self.q_proj = Linear(config.hidden_size, config.hidden_size)
+        self.k_proj = Linear(config.hidden_size, config.hidden_size)
+        self.v_proj = Linear(config.hidden_size, config.hidden_size)
+        self.o_proj = Linear(config.hidden_size, config.hidden_size)
+
+class DecoderLayer:
+    def __init__(self, config):
+        self.self_attn = CrossAttention(config)
+        self.encoder_attn = CrossAttention(config)
+        self.mlp = MLP(config)
+        self.input_layernorm = RMSNorm(config.hidden_size)
+        self.post_attention_layernorm = RMSNorm(config.hidden_size)
+
+class Seq2SeqLM:
+    def __init__(self, config):
+        self.embed_tokens = Embedding(config.vocab_size, config.hidden_size)
+        self.layers = ModuleList()
+        self.layers.append(DecoderLayer(config))
+        self.norm = RMSNorm(config.hidden_size)
+        self.lm_head = Linear(config.hidden_size, config.vocab_size)
+'''
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source_path = Path(tmpdir) / "seq2seq_model.py"
+            source_path.write_text(source_text)
+            graph = TransformerSourceGraphBuilder(make_config(), source_path=source_path).build_graph(
+                batch_size=1,
+                seq_len=16,
+                layers=1,
+            )
+        names = [node.name for node in graph.nodes]
+        self.assertIn("layer_0_cross_attn_scores", names)
+        self.assertIn("layer_0_cross_attn_softmax", names)
+        self.assertIn("layer_0_cross_attn_out", names)
+        self.assertIn("layer_0_cross_attn_scores", graph.predecessors("layer_0_cross_attn_softmax"))
+        self.assertIn("layer_0_cross_attn_softmax", graph.predecessors("layer_0_cross_attn_out"))
+
+    def test_model_config_supports_generic_transformer_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "config.json"
+            config_path.write_text(
+                """
+{
+  "vocab_size": 50000,
+  "hidden_size": 1024,
+  "intermediate_size": 4096,
+  "num_hidden_layers": 24,
+  "num_attention_heads": 16,
+  "num_key_value_heads": 4,
+  "torch_dtype": "torch.float16"
+}
+"""
+            )
+            config = ModelConfig.from_json(config_path)
+
+        self.assertEqual(config.dim, 1024)
+        self.assertEqual(config.inter_dim, 4096)
+        self.assertEqual(config.n_layers, 24)
+        self.assertEqual(config.n_heads, 16)
+        self.assertEqual(config.n_kv_heads, 4)
+        self.assertEqual(config.dtype, DType.FP16)
 
     def test_graph_builder_creates_transformer_structure(self) -> None:
         graph = DeepSeekGraphBuilder(make_config()).build_graph(batch_size=1, seq_len=32, layers=2)
