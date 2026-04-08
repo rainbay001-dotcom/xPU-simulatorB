@@ -1,0 +1,9 @@
+{
+  "name": "NVIDIA A100",
+  "architecture": "nvidia",
+  "compute_units": 108,
+  "peak_tflops": 312.0,
+  "mem_bandwidth_gbps": 1555.0,
+  "launch_overhead_us": 5.0,
+  "on_chip_mem_mb": 20.0
+}

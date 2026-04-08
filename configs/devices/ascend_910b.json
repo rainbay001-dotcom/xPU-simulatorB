@@ -1,0 +1,9 @@
+{
+  "name": "Ascend 910B",
+  "architecture": "ascend",
+  "compute_units": 32,
+  "peak_tflops": 320.0,
+  "mem_bandwidth_gbps": 1200.0,
+  "launch_overhead_us": 7.0,
+  "on_chip_mem_mb": 32.0
+}
