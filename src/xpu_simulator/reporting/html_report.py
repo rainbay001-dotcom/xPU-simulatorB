@@ -100,6 +100,17 @@ def render_html_report(graph: Graph, result: SimulationResult) -> str:
     .tag {{ display: inline-block; padding: 2px 7px; border-radius: 999px; font-size: 11px; font-family: Menlo, Monaco, Consolas, monospace; background: rgba(255,255,255,0.58); border: 1px solid rgba(110,90,57,0.18); }}
     .kernel-meta {{ font-size: 12px; color: #5b6470; font-family: Menlo, Monaco, Consolas, monospace; }}
     .arrow {{ font-size: 34px; color: #9a8667; align-self: center; padding: 0 2px; }}
+    .timeline-shell {{ overflow-x: auto; padding: 8px 0; }}
+    .timeline-svg text {{ font-family: Menlo, Monaco, Consolas, monospace; fill: #40372d; }}
+    .timeline-axis {{ stroke: #8f7c61; stroke-width: 1; }}
+    .timeline-grid {{ stroke: rgba(143,124,97,0.28); stroke-width: 1; stroke-dasharray: 3 4; }}
+    .timeline-lane {{ fill: rgba(255,255,255,0.35); stroke: rgba(121,98,65,0.14); }}
+    .timeline-bar {{ rx: 6; ry: 6; }}
+    .timeline-bar.compute {{ fill: rgba(200,107,60,0.82); }}
+    .timeline-bar.memory {{ fill: rgba(46,125,116,0.82); }}
+    .timeline-bar.communication {{ fill: rgba(125,90,181,0.82); }}
+    .timeline-label {{ font-size: 11px; }}
+    .timeline-title {{ font-size: 12px; font-weight: 700; }}
   </style>
 </head>
 <body>
@@ -138,6 +149,12 @@ def render_html_report(graph: Graph, result: SimulationResult) -> str:
     <p class="muted">Model stages are grouped by layer. Node border color shows resource class, and node fill color shows the dominant bottleneck.</p>
     {_graph_legend()}
     {_architecture_graph(preamble, layer_kernels, epilogue, result.total_latency_us)}
+  </div>
+
+  <div class="card">
+    <h2>Timeline View</h2>
+    <p class="muted">NSight-style simulated timeline grouped into compute, memory, and communication lanes.</p>
+    {_timeline_view(result)}
   </div>
 
   <div class="card">
@@ -240,6 +257,75 @@ def _graph_legend() -> str:
         "<div class='legend-chip'><span class='swatch' style='background: var(--bottleneck-communication)'></span>bottleneck: communication</div>"
         "</div>"
     )
+
+
+def _timeline_view(result: SimulationResult) -> str:
+    lane_order = ["compute", "memory", "communication"]
+    lane_titles = {
+        "compute": "Compute lane",
+        "memory": "Memory lane",
+        "communication": "Communication lane",
+    }
+    lane_items = {
+        lane: [item for item in result.kernel_estimates if item.resource == lane]
+        for lane in lane_order
+    }
+    width = 1200
+    left_pad = 150
+    right_pad = 36
+    top_pad = 32
+    lane_height = 88
+    row_step = 16
+    total_height = top_pad + (lane_height * len(lane_order)) + 40
+    time_span = max(result.total_latency_us, max((item.end_time_us for item in result.kernel_estimates), default=0.0), 1.0)
+    plot_width = width - left_pad - right_pad
+
+    parts: list[str] = [
+        f"<div class='timeline-shell'><svg class='timeline-svg' viewBox='0 0 {width} {total_height}' width='{width}' height='{total_height}' role='img' aria-label='Simulated execution timeline'>"
+    ]
+    tick_count = 8
+    for tick in range(tick_count + 1):
+        x = left_pad + (plot_width * tick / tick_count)
+        time_us = time_span * tick / tick_count
+        parts.append(f"<line class='timeline-grid' x1='{x:.2f}' y1='{top_pad - 10}' x2='{x:.2f}' y2='{total_height - 24}' />")
+        parts.append(f"<text class='timeline-label' x='{x:.2f}' y='18' text-anchor='middle'>{time_us:.1f} us</text>")
+    parts.append(f"<line class='timeline-axis' x1='{left_pad}' y1='{top_pad - 2}' x2='{width - right_pad}' y2='{top_pad - 2}' />")
+
+    for lane_index, lane in enumerate(lane_order):
+        y = top_pad + lane_index * lane_height
+        parts.append(f"<rect class='timeline-lane' x='{left_pad}' y='{y}' width='{plot_width}' height='{lane_height - 10}' rx='10' ry='10' />")
+        parts.append(f"<text class='timeline-title' x='12' y='{y + 22}'>{escape(lane_titles[lane])}</text>")
+        parts.append(f"<text class='timeline-label' x='12' y='{y + 40}'>{len(lane_items[lane])} kernels</text>")
+
+        items = sorted(lane_items[lane], key=lambda item: item.start_time_us)
+        lane_bottom = y + lane_height - 24
+        for item_index, item in enumerate(items):
+            bar_x = left_pad + (item.start_time_us / time_span) * plot_width
+            bar_width = max((item.total_time_us / time_span) * plot_width, 2.0)
+            row = item_index % 3
+            bar_y = y + 10 + row * row_step
+            parts.append(
+                f"<rect class='timeline-bar {lane}' x='{bar_x:.2f}' y='{bar_y:.2f}' width='{bar_width:.2f}' height='11'>"
+                f"<title>{escape(item.task_name)} | start={item.start_time_us:.3f} us | end={item.end_time_us:.3f} us | total={item.total_time_us:.3f} us</title>"
+                "</rect>"
+            )
+            if item_index < 12:
+                label_x = min(bar_x + bar_width + 4, width - right_pad - 40)
+                parts.append(
+                    f"<text class='timeline-label' x='{label_x:.2f}' y='{bar_y + 9:.2f}'>{escape(_compact_label(item.task_name))}</text>"
+                )
+        parts.append(f"<line class='timeline-axis' x1='{left_pad}' y1='{lane_bottom:.2f}' x2='{width - right_pad}' y2='{lane_bottom:.2f}' />")
+
+    parts.append("</svg></div>")
+    return "".join(parts)
+
+
+def _compact_label(name: str) -> str:
+    if name.startswith("layer_"):
+        pieces = name.split("_")
+        if len(pieces) >= 3:
+            return f"{pieces[0]}_{pieces[1]}:{pieces[2]}"
+    return name
 
 
 def _layer_sections(layer_kernels: dict[str, list[dict[str, object]]], total_latency_us: float) -> str:
