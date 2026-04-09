@@ -61,6 +61,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seq-len", type=int, default=128)
     parser.add_argument("--mode", choices=["prefill", "decode"], default="prefill")
     parser.add_argument("--context-len", type=int, help="Existing KV-cache context length for decode mode")
+    parser.add_argument("--enable-fusion", action="store_true", help="Enable supported graph-level kernel fusion passes")
     parser.add_argument("--layer-start", type=int, default=0)
     parser.add_argument("--layers", type=int, default=None)
     parser.add_argument("--dump-memory-events", action="store_true")
@@ -99,6 +100,7 @@ def main() -> None:
             layer_start=args.layer_start,
             mode=args.mode,
             context_len=args.context_len,
+            enable_fusion=args.enable_fusion,
         )
         candidate_builder = _make_graph_builder(args, config, frontend_override=args.compare_target)
         candidate = candidate_builder.build_graph(
@@ -108,6 +110,7 @@ def main() -> None:
             layer_start=args.layer_start,
             mode=args.mode,
             context_len=args.context_len,
+            enable_fusion=args.enable_fusion,
         )
         if args.json_output:
             print(json.dumps(diff_graphs(reference, candidate), indent=2))
@@ -122,6 +125,7 @@ def main() -> None:
         layer_start=args.layer_start,
         mode=args.mode,
         context_len=args.context_len,
+        enable_fusion=args.enable_fusion,
     )
     simulator = Simulator()
 

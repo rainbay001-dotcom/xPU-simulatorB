@@ -93,6 +93,10 @@ def kernel_family(name: str) -> str:
         return "embedding"
     if name == "lm_head":
         return "lm_head"
+    if name.endswith("_fused_attention"):
+        return "fused_attention"
+    if name.endswith("_fused_router_dispatch"):
+        return "fused_router_dispatch"
     if name.endswith("_kv_cache_read"):
         return "kv_cache_read"
     if name.endswith("_kv_cache_write"):

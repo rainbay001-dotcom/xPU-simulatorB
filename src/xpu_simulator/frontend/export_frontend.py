@@ -18,6 +18,7 @@ class TorchExportGraphBuilder(TorchFxGraphBuilder):
         layer_start: int = 0,
         mode: str = "prefill",
         context_len: int | None = None,
+        enable_fusion: bool = False,
     ) -> Graph:
         torch, _, _, _ = self._load_torch_components()
         module = self._load_module()
@@ -41,6 +42,7 @@ class TorchExportGraphBuilder(TorchFxGraphBuilder):
         graph.metadata["step_tokens"] = seq_len if mode == "prefill" else 1
         graph.metadata["layer_start"] = layer_start
         graph.metadata["layer_stop"] = layer_start + (layers if layers is not None else self.config.n_layers)
+        graph.metadata["fusion_requested"] = enable_fusion
 
         export_nodes = list(graph_module.graph.nodes)
         export_to_sim: dict[str, Node] = {}
@@ -63,4 +65,4 @@ class TorchExportGraphBuilder(TorchFxGraphBuilder):
                 if src is not None:
                     graph.add_edge(src, dst)
 
-        return apply_default_passes(graph)
+        return apply_default_passes(graph, enable_fusion=enable_fusion)

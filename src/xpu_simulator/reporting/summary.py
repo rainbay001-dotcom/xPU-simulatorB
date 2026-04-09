@@ -66,6 +66,7 @@ def format_summary(graph: Graph, result: SimulationResult) -> str:
         f"Graph: {graph.name}",
         f"Backend: {result.backend_name} ({result.device_name})",
         f"Mode: {execution_mode}  Context: {context_len}  Step tokens: {step_tokens}",
+        f"Fusion: {'enabled' if graph.metadata.get('fusion_requested', False) else 'disabled'}  Fused Nodes: {graph.metadata.get('fused_node_count', 0)}",
         f"Nodes: {graph.node_count()}  Edges: {graph.edge_count()}",
         f"Total FLOPs: {graph.total_flops():.3e}",
         f"Total Bytes: {graph.total_bytes():.3e}",

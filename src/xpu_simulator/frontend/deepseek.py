@@ -105,6 +105,7 @@ class DeepSeekGraphBuilder:
         layer_start: int = 0,
         mode: str = "prefill",
         context_len: int | None = None,
+        enable_fusion: bool = False,
     ) -> Graph:
         layer_count = layers if layers is not None else self.config.n_layers
         layer_stop = min(layer_start + layer_count, self.config.n_layers)
@@ -162,7 +163,8 @@ class DeepSeekGraphBuilder:
         graph.add_node(output)
         if prev is not None:
             graph.add_edge(prev, output)
-        return apply_default_passes(graph)
+        graph.metadata["fusion_requested"] = enable_fusion
+        return apply_default_passes(graph, enable_fusion=enable_fusion)
 
     def _make_embedding_node(self, batch_size: int, seq_len: int) -> Node:
         tokens = TensorDesc((batch_size, seq_len), DType.INT8)

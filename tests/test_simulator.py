@@ -588,6 +588,26 @@ class ToyLM:
         self.assertIsNotNone(nvidia_result.memory_summary)
         self.assertGreater(nvidia_result.memory_summary.peak_live_bytes, 0)
 
+    def test_kernel_fusion_reduces_attention_chain(self) -> None:
+        base_graph = DeepSeekGraphBuilder(make_config()).build_graph(batch_size=1, seq_len=16, layers=1)
+        fused_graph = DeepSeekGraphBuilder(make_config()).build_graph(
+            batch_size=1,
+            seq_len=16,
+            layers=1,
+            enable_fusion=True,
+        )
+        base_names = [node.name for node in base_graph.nodes]
+        fused_names = [node.name for node in fused_graph.nodes]
+        self.assertIn("layer_0_attn_scores", base_names)
+        self.assertIn("layer_0_softmax", base_names)
+        self.assertIn("layer_0_attn_out", base_names)
+        self.assertNotIn("layer_0_attn_scores", fused_names)
+        self.assertNotIn("layer_0_softmax", fused_names)
+        self.assertNotIn("layer_0_attn_out", fused_names)
+        self.assertIn("layer_0_fused_attention", fused_names)
+        self.assertLess(fused_graph.node_count(), base_graph.node_count())
+        self.assertGreater(fused_graph.metadata["fused_node_count"], 0)
+
     def test_reporting_payload_contains_summary(self) -> None:
         source_path = Path("/Users/ray/Documents/Codex/DeepSeek/DeepSeek-V3.2/inference/model.py")
         graph = DeepSeekGraphBuilder(make_config(), source_path=source_path).build_graph(batch_size=2, seq_len=8, layers=1)
@@ -624,6 +644,18 @@ class ToyLM:
         summary = format_summary(graph, result)
         self.assertIn("Breakdown:", summary)
         self.assertIn("Top families", summary)
+
+    def test_fused_summary_mentions_fusion_and_family(self) -> None:
+        graph = DeepSeekGraphBuilder(make_config()).build_graph(
+            batch_size=1,
+            seq_len=8,
+            layers=1,
+            enable_fusion=True,
+        )
+        result = Simulator().simulate(graph, NvidiaBackend())
+        summary = format_summary(graph, result)
+        self.assertIn("Fusion: enabled", summary)
+        self.assertIn("fused_attention", summary)
 
     def test_decode_summary_mentions_mode_and_kv_cache(self) -> None:
         graph = DeepSeekGraphBuilder(make_config()).build_graph(

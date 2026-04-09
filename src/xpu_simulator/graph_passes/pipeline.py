@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from ..ir.graph import Graph, Node
 from ..ir.types import OpKind
+from .fusion import fuse_supported_patterns
 
 
-def apply_default_passes(graph: Graph) -> Graph:
+def apply_default_passes(graph: Graph, enable_fusion: bool = False) -> Graph:
+    if enable_fusion:
+        graph = fuse_supported_patterns(graph)
     _annotate_kernel_families(graph)
     _annotate_graph_summary(graph)
     return graph
@@ -39,10 +42,13 @@ def _annotate_graph_summary(graph: Graph) -> None:
     op_histogram: dict[str, int] = {}
     moe_nodes = 0
     branch_edges = 0
+    fused_nodes = 0
     for node in graph.nodes:
         op_histogram[node.op_kind.value] = op_histogram.get(node.op_kind.value, 0) + 1
         if node.attrs.get("moe", False):
             moe_nodes += 1
+        if node.attrs.get("fused", False):
+            fused_nodes += 1
     for targets in graph.edges.values():
         if len(targets) > 1:
             branch_edges += len(targets) - 1
@@ -50,3 +56,4 @@ def _annotate_graph_summary(graph: Graph) -> None:
     graph.metadata["moe_node_count"] = moe_nodes
     graph.metadata["total_layers"] = sum(1 for node in graph.nodes if node.name.endswith("_attn_norm"))
     graph.metadata["branch_edge_count"] = branch_edges
+    graph.metadata["fused_node_count"] = fused_nodes

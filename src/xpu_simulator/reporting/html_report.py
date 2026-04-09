@@ -122,6 +122,7 @@ def render_html_report(graph: Graph, result: SimulationResult) -> str:
       <p>Backend: <strong>{escape(result.backend_name)}</strong> ({escape(result.device_name)})</p>
       <p>Total latency: <strong>{result.total_latency_us:.3f} us</strong></p>
       <p>Mode: <strong>{escape(str(graph.metadata.get("mode", "prefill")))}</strong></p>
+      <p>Fusion: <strong>{'enabled' if graph.metadata.get("fusion_requested", False) else 'disabled'}</strong>, fused nodes: <strong>{int(graph.metadata.get("fused_node_count", 0))}</strong></p>
       <p>Context / step tokens: <strong>{int(graph.metadata.get("context_len", graph.metadata.get("seq_len", 0)))}</strong> / <strong>{int(graph.metadata.get("step_tokens", graph.metadata.get("seq_len", 0)))}</strong></p>
       <p>Nodes / edges: <strong>{graph.node_count()}</strong> / <strong>{graph.edge_count()}</strong></p>
       <p>Peak live memory: <strong>{_format_bytes(result.memory_summary.peak_live_bytes if result.memory_summary else 0)}</strong></p>

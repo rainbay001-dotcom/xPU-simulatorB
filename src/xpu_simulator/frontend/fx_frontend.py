@@ -30,6 +30,7 @@ class TorchFxGraphBuilder:
         layer_start: int = 0,
         mode: str = "prefill",
         context_len: int | None = None,
+        enable_fusion: bool = False,
     ) -> Graph:
         torch, nn, symbolic_trace, ShapeProp = self._load_torch_components()
         module = self._load_module()
@@ -53,6 +54,7 @@ class TorchFxGraphBuilder:
         graph.metadata["step_tokens"] = seq_len if mode == "prefill" else 1
         graph.metadata["layer_start"] = layer_start
         graph.metadata["layer_stop"] = layer_start + (layers if layers is not None else self.config.n_layers)
+        graph.metadata["fusion_requested"] = enable_fusion
 
         fx_nodes = list(traced.graph.nodes)
         fx_to_sim: dict[str, Node] = {}
@@ -74,7 +76,7 @@ class TorchFxGraphBuilder:
                 if src is not None:
                     graph.add_edge(src, dst)
 
-        return apply_default_passes(graph)
+        return apply_default_passes(graph, enable_fusion=enable_fusion)
 
     def _load_torch_components(self):
         import torch

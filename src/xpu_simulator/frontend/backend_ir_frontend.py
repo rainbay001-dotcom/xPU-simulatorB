@@ -24,6 +24,7 @@ class BackendIrGraphBuilder:
         layer_start: int = 0,
         mode: str = "prefill",
         context_len: int | None = None,
+        enable_fusion: bool = False,
     ) -> Graph:
         raw = json.loads(self.ir_path.read_text())
         graph = Graph(name=raw.get("name", self.ir_path.stem))
@@ -37,6 +38,7 @@ class BackendIrGraphBuilder:
         graph.metadata["step_tokens"] = seq_len if mode == "prefill" else 1
         graph.metadata["layer_start"] = layer_start
         graph.metadata["layer_stop"] = layer_start + (layers or 0)
+        graph.metadata["fusion_requested"] = enable_fusion
 
         node_map: dict[str, Node] = {}
         for raw_node in raw.get("nodes", []):
@@ -57,7 +59,7 @@ class BackendIrGraphBuilder:
             dst = node_map[raw_edge["dst"]]
             graph.add_edge(src, dst)
 
-        return apply_default_passes(graph)
+        return apply_default_passes(graph, enable_fusion=enable_fusion)
 
     def _tensor_desc(self, raw: dict[str, object]) -> TensorDesc:
         return TensorDesc(
