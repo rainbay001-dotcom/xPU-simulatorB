@@ -24,9 +24,11 @@ from xpu_simulator.frontend import (
     TorchFxGraphBuilder,
     TransformerSourceGraphBuilder,
 )
+from xpu_simulator.graph_passes import fuse_supported_patterns
+from xpu_simulator.ir.graph import Graph, Node, TensorDesc
 from xpu_simulator.profiling import load_trace_events, summarize_trace_events
-from xpu_simulator.reporting import compare_results, diff_graphs, format_summary, write_html_report
-from xpu_simulator.ir.types import DType
+from xpu_simulator.reporting import compare_results, diff_graphs, format_summary, write_comparison_html_report, write_html_report
+from xpu_simulator.ir.types import DType, OpKind
 from xpu_simulator.reporting import result_to_dict
 from xpu_simulator.sim import Simulator
 
@@ -51,6 +53,20 @@ def make_config() -> DeepSeekConfig:
 
 
 class SimulatorScaffoldTests(unittest.TestCase):
+    @staticmethod
+    def _make_test_tensor() -> TensorDesc:
+        return TensorDesc((1, 8, 16), DType.BF16)
+
+    def _make_router_fusion_graph(self) -> Graph:
+        tensor = self._make_test_tensor()
+        graph = Graph(name="router_fusion")
+        router = graph.add_node(Node("layer_1_router", OpKind.TOPK, [tensor], [tensor], flops=50, bytes_moved=120))
+        dispatch = graph.add_node(Node("layer_1_dispatch", OpKind.GATHER, [tensor], [tensor], flops=20, bytes_moved=80))
+        expert = graph.add_node(Node("layer_1_expert", OpKind.MATMUL, [tensor], [tensor], flops=200, bytes_moved=160))
+        graph.add_edge(router, dispatch)
+        graph.add_edge(dispatch, expert)
+        return graph
+
     def test_source_analyzer_detects_deepseek_features(self) -> None:
         source_path = Path("/Users/ray/Documents/Codex/DeepSeek/DeepSeek-V3.2/inference/model.py")
         summary = DeepSeekSourceAnalyzer().analyze(source_path)
@@ -608,6 +624,44 @@ class ToyLM:
         self.assertLess(fused_graph.node_count(), base_graph.node_count())
         self.assertGreater(fused_graph.metadata["fused_node_count"], 0)
 
+    def test_kernel_fusion_reduces_router_dispatch_chain(self) -> None:
+        base_graph = DeepSeekGraphBuilder(make_config()).build_graph(batch_size=1, seq_len=16, layers=2)
+        fused_graph = DeepSeekGraphBuilder(make_config()).build_graph(
+            batch_size=1,
+            seq_len=16,
+            layers=2,
+            enable_fusion=True,
+        )
+        base_names = [node.name for node in base_graph.nodes]
+        fused_names = [node.name for node in fused_graph.nodes]
+        self.assertIn("layer_1_router", base_names)
+        self.assertIn("layer_1_dispatch", base_names)
+        self.assertNotIn("layer_1_router", fused_names)
+        self.assertNotIn("layer_1_dispatch", fused_names)
+        self.assertIn("layer_1_fused_router_dispatch", fused_names)
+
+    def test_router_dispatch_fusion_preserves_external_edges(self) -> None:
+        fused_graph = fuse_supported_patterns(self._make_router_fusion_graph())
+        fused_names = [node.name for node in fused_graph.nodes]
+        self.assertEqual(fused_names, ["layer_1_fused_router_dispatch", "layer_1_expert"])
+        self.assertEqual(fused_graph.successors("layer_1_fused_router_dispatch"), ["layer_1_expert"])
+        fused_node = next(node for node in fused_graph.nodes if node.name == "layer_1_fused_router_dispatch")
+        self.assertTrue(fused_node.attrs["fused"])
+        self.assertEqual(fused_node.attrs["fusion_pattern"], "router_dispatch")
+        self.assertEqual(fused_node.attrs["fused_members"], ["layer_1_router", "layer_1_dispatch"])
+
+    def test_router_dispatch_fusion_skips_branching_dispatch(self) -> None:
+        tensor = self._make_test_tensor()
+        graph = Graph(name="router_branch")
+        router = graph.add_node(Node("layer_1_router", OpKind.TOPK, [tensor], [tensor], flops=50, bytes_moved=120))
+        dispatch = graph.add_node(Node("layer_1_dispatch", OpKind.GATHER, [tensor], [tensor], flops=20, bytes_moved=80))
+        side_consumer = graph.add_node(Node("layer_1_side", OpKind.SCATTER, [tensor], [tensor], flops=10, bytes_moved=24))
+        graph.add_edge(router, dispatch)
+        graph.add_edge(router, side_consumer)
+        fused_graph = fuse_supported_patterns(graph)
+        self.assertIn("layer_1_router", [node.name for node in fused_graph.nodes])
+        self.assertNotIn("layer_1_fused_router_dispatch", [node.name for node in fused_graph.nodes])
+
     def test_reporting_payload_contains_summary(self) -> None:
         source_path = Path("/Users/ray/Documents/Codex/DeepSeek/DeepSeek-V3.2/inference/model.py")
         graph = DeepSeekGraphBuilder(make_config(), source_path=source_path).build_graph(batch_size=2, seq_len=8, layers=1)
@@ -690,6 +744,22 @@ class ToyLM:
         self.assertIn("Architecture Timeline", html)
         self.assertIn("layer_0", html)
         self.assertIn("layer_0_attn_scores", html)
+
+    def test_compare_html_report_writer_includes_both_backends(self) -> None:
+        graph = DeepSeekGraphBuilder(make_config()).build_graph(batch_size=1, seq_len=8, layers=1, enable_fusion=True)
+        results = {
+            "nvidia": Simulator().simulate(graph, NvidiaBackend()),
+            "ascend": Simulator().simulate(graph, AscendBackend()),
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            html_path = Path(tmpdir) / "compare.html"
+            write_comparison_html_report(graph, results, html_path)
+            html = html_path.read_text()
+        self.assertIn("Backend Comparison", html)
+        self.assertIn("nvidia", html)
+        self.assertIn("ascend", html)
+        self.assertIn("Compare mode report", html)
+        self.assertIn("Fastest backend", html)
 
     def test_layer_start_can_target_moe_layers(self) -> None:
         graph = DeepSeekGraphBuilder(make_config()).build_graph(batch_size=1, seq_len=8, layers=2, layer_start=2)

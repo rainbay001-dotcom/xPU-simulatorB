@@ -148,6 +148,8 @@ PYTHONPATH=src python3 -m xpu_simulator.cli.main \
   --seq-len 128
 ```
 
+Compare mode writes a dedicated comparison HTML report that summarizes both backends.
+
 ### Decode-mode run with KV cache
 
 ```bash
@@ -228,6 +230,11 @@ The HTML report includes:
 - per-layer kernel tables
 - KV-cache summary for decode runs
 
+In compare mode, the HTML report includes:
+- a backend comparison table
+- per-backend latency and memory summaries
+- per-backend resource and kernel-family breakdowns
+
 ## Architecture Export
 
 To export extracted model architecture JSON:
@@ -237,6 +244,30 @@ PYTHONPATH=src python3 -m xpu_simulator.cli.main \
   --model-config /Users/ray/Documents/Codex/DeepSeek/DeepSeek-V3.2/inference/config_671B_v3.2.json \
   --model-source /Users/ray/Documents/Codex/DeepSeek/DeepSeek-V3.2/inference/model.py \
   --export-architecture /tmp/deepseek_architecture.json
+```
+
+## Repeatable DeepSeek Runs
+
+Use the helper script in [scripts/run_deepseek_examples.sh](/Users/ray/Documents/Repo/xPU-simulatorB/scripts/run_deepseek_examples.sh) to reproduce the representative report cases.
+
+Examples:
+
+```bash
+cd /Users/ray/Documents/Repo/xPU-simulatorB
+
+scripts/run_deepseek_examples.sh prefill-ascend
+scripts/run_deepseek_examples.sh decode-ascend
+scripts/run_deepseek_examples.sh compare
+scripts/run_deepseek_examples.sh all
+```
+
+Optional overrides:
+
+```bash
+MODEL_CONFIG=/path/to/config.json \
+MODEL_SOURCE=/path/to/model.py \
+PYTHON_BIN=python3 \
+scripts/run_deepseek_examples.sh all
 ```
 
 To print it to stdout:

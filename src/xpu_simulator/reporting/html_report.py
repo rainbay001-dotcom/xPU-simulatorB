@@ -17,6 +17,12 @@ def write_html_report(graph: Graph, result: SimulationResult, output_path: str |
     return str(path)
 
 
+def write_comparison_html_report(graph: Graph, results: dict[str, SimulationResult], output_path: str | Path) -> str:
+    path = Path(output_path)
+    path.write_text(render_comparison_html_report(graph, results))
+    return str(path)
+
+
 def render_html_report(graph: Graph, result: SimulationResult) -> str:
     breakdown = result_breakdown(result)
     cache_summary = result.cache_summary
@@ -167,6 +173,104 @@ def render_html_report(graph: Graph, result: SimulationResult) -> str:
     {_kernel_table(preamble, "Preamble kernels")}
     {_layer_sections(layer_kernels, result.total_latency_us)}
     {_kernel_table(epilogue, "Output kernels")}
+  </div>
+</body>
+</html>
+"""
+
+
+def render_comparison_html_report(graph: Graph, results: dict[str, SimulationResult]) -> str:
+    ordered_results = sorted(results.items(), key=lambda item: item[1].total_latency_us)
+    fastest_backend = ordered_results[0][0] if ordered_results else "n/a"
+    comparison_rows = []
+    detail_cards = []
+    for backend_name, result in ordered_results:
+        breakdown = result_breakdown(result)
+        peak_memory = result.memory_summary.peak_live_bytes if result.memory_summary else 0
+        comparison_rows.append(
+            f"<tr><td>{escape(backend_name)}</td><td>{escape(result.device_name)}</td><td>{result.total_latency_us:.3f}</td>"
+            f"<td>{_format_bytes(peak_memory)}</td><td>{escape('yes' if backend_name == fastest_backend else 'no')}</td></tr>"
+        )
+        detail_cards.append(
+            "<div class='card'>"
+            f"<h2>{escape(backend_name)} details</h2>"
+            f"<p>Device: <strong>{escape(result.device_name)}</strong></p>"
+            f"<p>Total latency: <strong>{result.total_latency_us:.3f} us</strong></p>"
+            f"<p>Peak live memory: <strong>{_format_bytes(peak_memory)}</strong></p>"
+            f"<p>Critical path kernels: <strong>{len(result.critical_path)}</strong></p>"
+            f"<p>Fastest backend: <strong>{'yes' if backend_name == fastest_backend else 'no'}</strong></p>"
+            f"{_resource_table(breakdown['by_resource'])}"
+            f"{_family_table(breakdown['by_family'][:8])}"
+            "</div>"
+        )
+
+    architecture = graph.metadata.get("architecture", {})
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>{escape(graph.name)} comparison report</title>
+  <style>
+    :root {{
+      --paper: #f5efe2;
+      --ink: #1f2a2d;
+      --muted: #677074;
+      --frame: #cdbd9d;
+      --card: #fffaf0;
+      --accent: #8e5a2b;
+      --accent-soft: #f1dfca;
+    }}
+    body {{ font-family: Georgia, 'Iowan Old Style', 'Palatino Linotype', serif; margin: 24px; color: var(--ink); background:
+      radial-gradient(circle at top left, rgba(255,255,255,0.45), transparent 28%),
+      linear-gradient(180deg, #f7f1e4 0%, #efe5d4 100%); }}
+    h1, h2, h3 {{ margin-bottom: 8px; font-family: 'Baskerville', 'Times New Roman', serif; letter-spacing: 0.02em; }}
+    .grid {{ display: grid; grid-template-columns: repeat(2, minmax(280px, 1fr)); gap: 16px; margin-bottom: 24px; }}
+    .card {{ background: linear-gradient(180deg, rgba(255,252,246,0.97), rgba(252,246,235,0.97)); border: 1px solid var(--frame); padding: 16px; border-radius: 14px; box-shadow: 0 8px 22px rgba(88, 69, 41, 0.08); }}
+    table {{ width: 100%; border-collapse: collapse; font-size: 13px; font-family: Menlo, Monaco, Consolas, monospace; }}
+    th, td {{ padding: 6px 8px; border-bottom: 1px solid #eadfce; text-align: left; }}
+    th {{ background: #f0e6d7; }}
+    .muted {{ color: var(--muted); }}
+    .compare-banner {{ background: linear-gradient(180deg, var(--accent-soft), #f8efe4); border: 1px solid var(--frame); border-radius: 14px; padding: 16px; margin-bottom: 24px; }}
+    .compare-banner strong {{ color: var(--accent); }}
+  </style>
+</head>
+<body>
+  <h1>{escape(graph.name)}</h1>
+  <div class="compare-banner">
+    <p>Compare mode report across <strong>{len(ordered_results)}</strong> backends.</p>
+    <p>Fastest backend: <strong>{escape(fastest_backend)}</strong></p>
+    <p class="muted">This report summarizes both backends instead of rendering only the fastest single-backend view.</p>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h2>Run Summary</h2>
+      <p>Mode: <strong>{escape(str(graph.metadata.get("mode", "prefill")))}</strong></p>
+      <p>Fusion: <strong>{'enabled' if graph.metadata.get("fusion_requested", False) else 'disabled'}</strong>, fused nodes: <strong>{int(graph.metadata.get("fused_node_count", 0))}</strong></p>
+      <p>Context / step tokens: <strong>{int(graph.metadata.get("context_len", graph.metadata.get("seq_len", 0)))}</strong> / <strong>{int(graph.metadata.get("step_tokens", graph.metadata.get("seq_len", 0)))}</strong></p>
+      <p>Nodes / edges: <strong>{graph.node_count()}</strong> / <strong>{graph.edge_count()}</strong></p>
+      <p>Total FLOPs / bytes: <strong>{graph.total_flops():.3e}</strong> / <strong>{graph.total_bytes():.3e}</strong></p>
+    </div>
+    <div class="card">
+      <h2>Architecture</h2>
+      <p>Model class: <strong>{escape(str(architecture.get("model_class")))}</strong></p>
+      <p>Block class: <strong>{escape(str(architecture.get("block_class")))}</strong></p>
+      <p>Attention class: <strong>{escape(str(architecture.get("attention_class")))}</strong></p>
+      <p>Dense FFN class: <strong>{escape(str(architecture.get("dense_ffn_class")))}</strong></p>
+      <p>MoE FFN class: <strong>{escape(str(architecture.get("moe_ffn_class")))}</strong></p>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Backend Comparison</h2>
+    <table>
+      <tr><th>Backend</th><th>Device</th><th>Total us</th><th>Peak memory</th><th>Fastest</th></tr>
+      {''.join(comparison_rows)}
+    </table>
+  </div>
+
+  <div class="grid">
+    {''.join(detail_cards)}
   </div>
 </body>
 </html>

@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>deepseek_b1_s32_l0-1 simulation report</title>
+  <style>
+    :root {
+      --paper: #f5efe2;
+      --ink: #1f2a2d;
+      --muted: #677074;
+      --frame: #cdbd9d;
+      --card: #fffaf0;
+      --compute: #c86b3c;
+      --memory: #2e7d74;
+      --communication: #7d5ab5;
+      --bottleneck-compute: #f6d5bb;
+      --bottleneck-memory: #cfe9e4;
+      --bottleneck-communication: #ddd3f2;
+      --layer-band: #e9ddc7;
+      --preamble-band: #d7e2c4;
+      --output-band: #e3d0b8;
+    }
+    body { font-family: Georgia, 'Iowan Old Style', 'Palatino Linotype', serif; margin: 24px; color: var(--ink); background:
+      radial-gradient(circle at top left, rgba(255,255,255,0.45), transparent 28%),
+      linear-gradient(180deg, #f7f1e4 0%, #efe5d4 100%); }
+    h1, h2, h3 { margin-bottom: 8px; font-family: 'Baskerville', 'Times New Roman', serif; letter-spacing: 0.02em; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(280px, 1fr)); gap: 16px; margin-bottom: 24px; }
+    .card { background: linear-gradient(180deg, rgba(255,252,246,0.97), rgba(252,246,235,0.97)); border: 1px solid var(--frame); padding: 16px; border-radius: 14px; box-shadow: 0 8px 22px rgba(88, 69, 41, 0.08); }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; font-family: Menlo, Monaco, Consolas, monospace; }
+    th, td { padding: 6px 8px; border-bottom: 1px solid #eadfce; text-align: left; }
+    th { background: #f0e6d7; }
+    details { margin: 10px 0; background: #fffdf8; border: 1px solid #d8ccbb; border-radius: 10px; padding: 10px 14px; }
+    summary { cursor: pointer; font-weight: 700; }
+    .muted { color: var(--muted); }
+    .arch-legend { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0 16px 0; }
+    .legend-chip { display: inline-flex; align-items: center; gap: 8px; padding: 6px 10px; border: 1px solid var(--frame); border-radius: 999px; background: rgba(255,255,255,0.55); font-size: 12px; font-family: Menlo, Monaco, Consolas, monospace; }
+    .swatch { width: 12px; height: 12px; border-radius: 999px; display: inline-block; }
+    .arch-graph { display: flex; flex-wrap: nowrap; gap: 18px; align-items: stretch; overflow-x: auto; padding: 8px 2px 18px 2px; }
+    .stage-box { min-width: 290px; max-width: 350px; background: linear-gradient(180deg, rgba(255,253,248,0.96), rgba(252,245,233,0.96)); border: 1px solid var(--frame); border-radius: 14px; padding: 0; box-shadow: 0 6px 16px rgba(96, 73, 44, 0.08); overflow: hidden; }
+    .stage-box h3 { margin: 0; }
+    .stage-header { padding: 12px 14px; border-bottom: 1px solid rgba(140,118,82,0.18); }
+    .stage-header.stage-layer { background: linear-gradient(180deg, var(--layer-band), #f0e6d7); }
+    .stage-header.stage-preamble { background: linear-gradient(180deg, var(--preamble-band), #e6edd7); }
+    .stage-header.stage-output { background: linear-gradient(180deg, var(--output-band), #eddcc8); }
+    .stage-body { padding: 10px 12px 12px 12px; }
+    .stage-meta { font-size: 12px; color: var(--muted); margin-top: 4px; margin-bottom: 2px; font-family: Menlo, Monaco, Consolas, monospace; }
+    .kernel-node { border-radius: 10px; padding: 10px; margin: 10px 0; border-left: 6px solid var(--compute); box-shadow: inset 0 0 0 1px rgba(120, 99, 66, 0.12); }
+    .kernel-node.resource-compute { border-left-color: var(--compute); }
+    .kernel-node.resource-memory { border-left-color: var(--memory); }
+    .kernel-node.resource-communication { border-left-color: var(--communication); }
+    .kernel-node.bottleneck-compute { background: linear-gradient(180deg, var(--bottleneck-compute), #fbf2e7); }
+    .kernel-node.bottleneck-memory { background: linear-gradient(180deg, var(--bottleneck-memory), #f0faf7); }
+    .kernel-node.bottleneck-communication { background: linear-gradient(180deg, var(--bottleneck-communication), #f6f2fd); }
+    .kernel-node strong { display: block; margin-bottom: 2px; }
+    .kernel-time { font-size: 18px; font-weight: 700; margin: 3px 0 6px 0; font-family: Menlo, Monaco, Consolas, monospace; }
+    .kernel-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+    .tag { display: inline-block; padding: 2px 7px; border-radius: 999px; font-size: 11px; font-family: Menlo, Monaco, Consolas, monospace; background: rgba(255,255,255,0.58); border: 1px solid rgba(110,90,57,0.18); }
+    .kernel-meta { font-size: 12px; color: #5b6470; font-family: Menlo, Monaco, Consolas, monospace; }
+    .arrow { font-size: 34px; color: #9a8667; align-self: center; padding: 0 2px; }
+    .timeline-shell { overflow-x: auto; padding: 8px 0; }
+    .timeline-svg text { font-family: Menlo, Monaco, Consolas, monospace; fill: #40372d; }
+    .timeline-axis { stroke: #8f7c61; stroke-width: 1; }
+    .timeline-grid { stroke: rgba(143,124,97,0.28); stroke-width: 1; stroke-dasharray: 3 4; }
+    .timeline-lane { fill: rgba(255,255,255,0.35); stroke: rgba(121,98,65,0.14); }
+    .timeline-bar { rx: 6; ry: 6; }
+    .timeline-bar.compute { fill: rgba(200,107,60,0.82); }
+    .timeline-bar.memory { fill: rgba(46,125,116,0.82); }
+    .timeline-bar.communication { fill: rgba(125,90,181,0.82); }
+    .timeline-label { font-size: 11px; }
+    .timeline-title { font-size: 12px; font-weight: 700; }
+  </style>
+</head>
+<body>
+  <h1>deepseek_b1_s32_l0-1</h1>
+  <div class="grid">
+    <div class="card">
+      <h2>Run Summary</h2>
+      <p>Backend: <strong>ascend</strong> (Ascend 910B)</p>
+      <p>Total latency: <strong>606.488 us</strong></p>
+      <p>Mode: <strong>prefill</strong></p>
+      <p>Fusion: <strong>enabled</strong>, fused nodes: <strong>1</strong></p>
+      <p>Context / step tokens: <strong>32</strong> / <strong>32</strong></p>
+      <p>Nodes / edges: <strong>17</strong> / <strong>16</strong></p>
+      <p>Peak live memory: <strong>1.25 MiB</strong></p>
+      <p>KV cache total: <strong>1.00 MiB</strong></p><p>KV cache per layer: <strong>1.00 MiB</strong></p>
+    </div>
+    <div class="card">
+      <h2>Architecture</h2>
+      <p>Model class: <strong>Transformer</strong></p>
+      <p>Block class: <strong>Block</strong></p>
+      <p>Attention class: <strong>MLA</strong></p>
+      <p>Dense FFN class: <strong>RMSNorm</strong></p>
+      <p>MoE FFN class: <strong>None</strong></p>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h2>Resource Breakdown</h2>
+      <table><tr><th>Resource</th><th>Total us</th><th>Share</th></tr><tr><td>compute</td><td>533.596</td><td>87.98%</td></tr>
+<tr><td>memory</td><td>80.258</td><td>13.23%</td></tr>
+<tr><td>communication</td><td>7.796</td><td>1.29%</td></tr></table>
+    </div>
+    <div class="card">
+      <h2>Top Kernel Families</h2>
+      <table><tr><th>Family</th><th>Count</th><th>Total us</th><th>Share</th></tr><tr><td>lm_head</td><td>1</td><td>305.929</td><td>50.44%</td></tr>
+<tr><td>qkv_proj</td><td>3</td><td>103.241</td><td>17.02%</td></tr>
+<tr><td>ffn_up</td><td>1</td><td>45.859</td><td>7.56%</td></tr>
+<tr><td>ffn_down</td><td>1</td><td>45.859</td><td>7.56%</td></tr>
+<tr><td>norm</td><td>4</td><td>38.267</td><td>6.31%</td></tr>
+<tr><td>attn_output_proj</td><td>1</td><td>21.392</td><td>3.53%</td></tr>
+<tr><td>attn_proj_merge</td><td>1</td><td>11.855</td><td>1.95%</td></tr>
+<tr><td>rope</td><td>1</td><td>11.855</td><td>1.95%</td></tr>
+<tr><td>fused_attention</td><td>1</td><td>11.316</td><td>1.87%</td></tr>
+<tr><td>kv_cache_write</td><td>1</td><td>10.884</td><td>1.79%</td></tr>
+<tr><td>all_reduce</td><td>1</td><td>7.796</td><td>1.29%</td></tr>
+<tr><td>embedding</td><td>1</td><td>7.398</td><td>1.22%</td></tr></table>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Architecture Graph</h2>
+    <p class="muted">Model stages are grouped by layer. Node border color shows resource class, and node fill color shows the dominant bottleneck.</p>
+    <div class='arch-legend'><div class='legend-chip'><span class='swatch' style='background: var(--compute)'></span>resource: compute</div><div class='legend-chip'><span class='swatch' style='background: var(--memory)'></span>resource: memory</div><div class='legend-chip'><span class='swatch' style='background: var(--communication)'></span>resource: communication</div><div class='legend-chip'><span class='swatch' style='background: var(--bottleneck-compute)'></span>bottleneck: compute</div><div class='legend-chip'><span class='swatch' style='background: var(--bottleneck-memory)'></span>bottleneck: memory</div><div class='legend-chip'><span class='swatch' style='background: var(--bottleneck-communication)'></span>bottleneck: communication</div></div>
+    <div class='arch-graph'><section class='stage-box'><div class='stage-header stage-preamble'><h3>Preamble</h3><div class='stage-meta'>7.398 us, 1.22% of wall time, 1 kernels</div></div><div class='stage-body'><div class='kernel-node resource-memory bottleneck-memory'><strong>embedding</strong><div class='kernel-time'>7.398 us</div><div class='kernel-tags'><span class='tag'>embedding</span><span class='tag'>memory</span><span class='tag'>memory</span></div><div class='kernel-meta'>start=0.000 us | end=7.398 us</div></div></div></section><div class='arrow'>&rarr;</div><section class='stage-box'><div class='stage-header stage-layer'><h3>layer_0</h3><div class='stage-meta'>308.324 us, 50.84% of wall time, 15 kernels</div></div><div class='stage-body'><div class='kernel-node resource-compute bottleneck-compute'><strong>layer_0_k_proj</strong><div class='kernel-time'>39.897 us</div><div class='kernel-tags'><span class='tag'>qkv_proj</span><span class='tag'>compute</span><span class='tag'>compute</span></div><div class='kernel-meta'>start=0.000 us | end=39.897 us</div></div>
+<div class='kernel-node resource-memory bottleneck-memory'><strong>layer_0_attn_norm</strong><div class='kernel-time'>7.765 us</div><div class='kernel-tags'><span class='tag'>norm</span><span class='tag'>memory</span><span class='tag'>memory</span></div><div class='kernel-meta'>start=7.398 us | end=15.163 us</div></div>
+<div class='kernel-node resource-compute bottleneck-compute'><strong>layer_0_v_proj</strong><div class='kernel-time'>39.897 us</div><div class='kernel-tags'><span class='tag'>qkv_proj</span><span class='tag'>compute</span><span class='tag'>compute</span></div><div class='kernel-meta'>start=39.897 us | end=79.793 us</div></div>
+<div class='kernel-node resource-compute bottleneck-compute'><strong>layer_0_q_proj</strong><div class='kernel-time'>23.448 us</div><div class='kernel-tags'><span class='tag'>qkv_proj</span><span class='tag'>compute</span><span class='tag'>compute</span></div><div class='kernel-meta'>start=79.793 us | end=103.241 us</div></div>
+<div class='kernel-node resource-memory bottleneck-memory'><strong>layer_0_attn_proj_merge</strong><div class='kernel-time'>11.855 us</div><div class='kernel-tags'><span class='tag'>attn_proj_merge</span><span class='tag'>memory</span><span class='tag'>memory</span></div><div class='kernel-meta'>start=103.241 us | end=115.096 us</div></div>
+<div class='kernel-node resource-memory bottleneck-memory'><strong>layer_0_q_norm</strong><div class='kernel-time'>11.369 us</div><div class='kernel-tags'><span class='tag'>norm</span><span class='tag'>memory</span><span class='tag'>memory</span></div><div class='kernel-meta'>start=115.096 us | end=126.465 us</div></div>
+<div class='kernel-node resource-memory bottleneck-memory'><strong>layer_0_kv_norm</strong><div class='kernel-time'>11.369 us</div><div class='kernel-tags'><span class='tag'>norm</span><span class='tag'>memory</span><span class='tag'>memory</span></div><div class='kernel-meta'>start=126.465 us | end=137.834 us</div></div>
+<div class='kernel-node resource-memory bottleneck-memory'><strong>layer_0_rope</strong><div class='kernel-time'>11.855 us</div><div class='kernel-tags'><span class='tag'>rope</span><span class='tag'>memory</span><span class='tag'>memory</span></div><div class='kernel-meta'>start=137.834 us | end=149.688 us</div></div>
+<div class='kernel-node resource-memory bottleneck-memory'><strong>layer_0_kv_cache_write</strong><div class='kernel-time'>10.884 us</div><div class='kernel-tags'><span class='tag'>kv_cache_write</span><span class='tag'>memory</span><span class='tag'>memory</span></div><div class='kernel-meta'>start=149.688 us | end=160.572 us</div></div>
+<div class='kernel-node resource-compute bottleneck-memory'><strong>layer_0_fused_attention</strong><div class='kernel-time'>11.316 us</div><div class='kernel-tags'><span class='tag'>fused_attention</span><span class='tag'>compute</span><span class='tag'>memory</span></div><div class='kernel-meta'>start=160.572 us | end=171.888 us</div></div>
+<div class='kernel-node resource-compute bottleneck-compute'><strong>layer_0_wo</strong><div class='kernel-time'>21.392 us</div><div class='kernel-tags'><span class='tag'>attn_output_proj</span><span class='tag'>compute</span><span class='tag'>compute</span></div><div class='kernel-meta'>start=171.888 us | end=193.281 us</div></div>
+<div class='kernel-node resource-memory bottleneck-memory'><strong>layer_0_ffn_norm</strong><div class='kernel-time'>7.765 us</div><div class='kernel-tags'><span class='tag'>norm</span><span class='tag'>memory</span><span class='tag'>memory</span></div><div class='kernel-meta'>start=193.281 us | end=201.045 us</div></div>
+<div class='kernel-node resource-compute bottleneck-compute'><strong>layer_0_ffn_w1</strong><div class='kernel-time'>45.859 us</div><div class='kernel-tags'><span class='tag'>ffn_up</span><span class='tag'>compute</span><span class='tag'>compute</span></div><div class='kernel-meta'>start=201.045 us | end=246.904 us</div></div>
+<div class='kernel-node resource-compute bottleneck-compute'><strong>layer_0_ffn_down</strong><div class='kernel-time'>45.859 us</div><div class='kernel-tags'><span class='tag'>ffn_down</span><span class='tag'>compute</span><span class='tag'>compute</span></div><div class='kernel-meta'>start=246.904 us | end=292.763 us</div></div>
+<div class='kernel-node resource-communication bottleneck-memory'><strong>layer_0_tensor_parallel_sync</strong><div class='kernel-time'>7.796 us</div><div class='kernel-tags'><span class='tag'>all_reduce</span><span class='tag'>communication</span><span class='tag'>memory</span></div><div class='kernel-meta'>start=292.763 us | end=300.560 us</div></div></div></section><div class='arrow'>&rarr;</div><section class='stage-box'><div class='stage-header stage-output'><h3>Output</h3><div class='stage-meta'>305.929 us, 50.44% of wall time, 1 kernels</div></div><div class='stage-body'><div class='kernel-node resource-compute bottleneck-compute'><strong>lm_head</strong><div class='kernel-time'>305.929 us</div><div class='kernel-tags'><span class='tag'>lm_head</span><span class='tag'>compute</span><span class='tag'>compute</span></div><div class='kernel-meta'>start=300.560 us | end=606.488 us</div></div></div></section></div>
+  </div>
+
+  <div class="card">
+    <h2>Timeline View</h2>
+    <p class="muted">NSight-style simulated timeline grouped into compute, memory, and communication lanes.</p>
+    <div class='timeline-shell'><svg class='timeline-svg' viewBox='0 0 1200 336' width='1200' height='336' role='img' aria-label='Simulated execution timeline'><line class='timeline-grid' x1='150.00' y1='22' x2='150.00' y2='312' /><text class='timeline-label' x='150.00' y='18' text-anchor='middle'>0.0 us</text><line class='timeline-grid' x1='276.75' y1='22' x2='276.75' y2='312' /><text class='timeline-label' x='276.75' y='18' text-anchor='middle'>75.8 us</text><line class='timeline-grid' x1='403.50' y1='22' x2='403.50' y2='312' /><text class='timeline-label' x='403.50' y='18' text-anchor='middle'>151.6 us</text><line class='timeline-grid' x1='530.25' y1='22' x2='530.25' y2='312' /><text class='timeline-label' x='530.25' y='18' text-anchor='middle'>227.4 us</text><line class='timeline-grid' x1='657.00' y1='22' x2='657.00' y2='312' /><text class='timeline-label' x='657.00' y='18' text-anchor='middle'>303.2 us</text><line class='timeline-grid' x1='783.75' y1='22' x2='783.75' y2='312' /><text class='timeline-label' x='783.75' y='18' text-anchor='middle'>379.1 us</text><line class='timeline-grid' x1='910.50' y1='22' x2='910.50' y2='312' /><text class='timeline-label' x='910.50' y='18' text-anchor='middle'>454.9 us</text><line class='timeline-grid' x1='1037.25' y1='22' x2='1037.25' y2='312' /><text class='timeline-label' x='1037.25' y='18' text-anchor='middle'>530.7 us</text><line class='timeline-grid' x1='1164.00' y1='22' x2='1164.00' y2='312' /><text class='timeline-label' x='1164.00' y='18' text-anchor='middle'>606.5 us</text><line class='timeline-axis' x1='150' y1='30' x2='1164' y2='30' /><rect class='timeline-lane' x='150' y='32' width='1014' height='78' rx='10' ry='10' /><text class='timeline-title' x='12' y='54'>Compute lane</text><text class='timeline-label' x='12' y='72'>8 kernels</text><rect class='timeline-bar compute' x='150.00' y='42.00' width='66.70' height='11'><title>layer_0_k_proj | start=0.000 us | end=39.897 us | total=39.897 us</title></rect><text class='timeline-label' x='220.70' y='51.00'>layer_0:k</text><rect class='timeline-bar compute' x='216.70' y='58.00' width='66.70' height='11'><title>layer_0_v_proj | start=39.897 us | end=79.793 us | total=39.897 us</title></rect><text class='timeline-label' x='287.41' y='67.00'>layer_0:v</text><rect class='timeline-bar compute' x='283.41' y='74.00' width='39.20' height='11'><title>layer_0_q_proj | start=79.793 us | end=103.241 us | total=23.448 us</title></rect><text class='timeline-label' x='326.61' y='83.00'>layer_0:q</text><rect class='timeline-bar compute' x='418.46' y='42.00' width='18.92' height='11'><title>layer_0_fused_attention | start=160.572 us | end=171.888 us | total=11.316 us</title></rect><text class='timeline-label' x='441.38' y='51.00'>layer_0:fused</text><rect class='timeline-bar compute' x='437.38' y='58.00' width='35.77' height='11'><title>layer_0_wo | start=171.888 us | end=193.281 us | total=21.392 us</title></rect><text class='timeline-label' x='477.15' y='67.00'>layer_0:wo</text><rect class='timeline-bar compute' x='486.13' y='74.00' width='76.67' height='11'><title>layer_0_ffn_w1 | start=201.045 us | end=246.904 us | total=45.859 us</title></rect><text class='timeline-label' x='566.80' y='83.00'>layer_0:ffn</text><rect class='timeline-bar compute' x='562.80' y='42.00' width='76.67' height='11'><title>layer_0_ffn_down | start=246.904 us | end=292.763 us | total=45.859 us</title></rect><text class='timeline-label' x='643.48' y='51.00'>layer_0:ffn</text><rect class='timeline-bar compute' x='652.51' y='58.00' width='511.49' height='11'><title>lm_head | start=300.560 us | end=606.488 us | total=305.929 us</title></rect><text class='timeline-label' x='1124.00' y='67.00'>lm_head</text><line class='timeline-axis' x1='150' y1='96.00' x2='1164' y2='96.00' /><rect class='timeline-lane' x='150' y='120' width='1014' height='78' rx='10' ry='10' /><text class='timeline-title' x='12' y='142'>Memory lane</text><text class='timeline-label' x='12' y='160'>8 kernels</text><rect class='timeline-bar memory' x='150.00' y='130.00' width='12.37' height='11'><title>embedding | start=0.000 us | end=7.398 us | total=7.398 us</title></rect><text class='timeline-label' x='166.37' y='139.00'>embedding</text><rect class='timeline-bar memory' x='162.37' y='146.00' width='12.98' height='11'><title>layer_0_attn_norm | start=7.398 us | end=15.163 us | total=7.765 us</title></rect><text class='timeline-label' x='179.35' y='155.00'>layer_0:attn</text><rect class='timeline-bar memory' x='322.61' y='162.00' width='19.82' height='11'><title>layer_0_attn_proj_merge | start=103.241 us | end=115.096 us | total=11.855 us</title></rect><text class='timeline-label' x='346.43' y='171.00'>layer_0:attn</text><rect class='timeline-bar memory' x='342.43' y='130.00' width='19.01' height='11'><title>layer_0_q_norm | start=115.096 us | end=126.465 us | total=11.369 us</title></rect><text class='timeline-label' x='365.44' y='139.00'>layer_0:q</text><rect class='timeline-bar memory' x='361.44' y='146.00' width='19.01' height='11'><title>layer_0_kv_norm | start=126.465 us | end=137.834 us | total=11.369 us</title></rect><text class='timeline-label' x='384.45' y='155.00'>layer_0:kv</text><rect class='timeline-bar memory' x='380.45' y='162.00' width='19.82' height='11'><title>layer_0_rope | start=137.834 us | end=149.688 us | total=11.855 us</title></rect><text class='timeline-label' x='404.27' y='171.00'>layer_0:rope</text><rect class='timeline-bar memory' x='400.27' y='130.00' width='18.20' height='11'><title>layer_0_kv_cache_write | start=149.688 us | end=160.572 us | total=10.884 us</title></rect><text class='timeline-label' x='422.46' y='139.00'>layer_0:kv</text><rect class='timeline-bar memory' x='473.15' y='146.00' width='12.98' height='11'><title>layer_0_ffn_norm | start=193.281 us | end=201.045 us | total=7.765 us</title></rect><text class='timeline-label' x='490.13' y='155.00'>layer_0:ffn</text><line class='timeline-axis' x1='150' y1='184.00' x2='1164' y2='184.00' /><rect class='timeline-lane' x='150' y='208' width='1014' height='78' rx='10' ry='10' /><text class='timeline-title' x='12' y='230'>Communication lane</text><text class='timeline-label' x='12' y='248'>1 kernels</text><rect class='timeline-bar communication' x='639.48' y='218.00' width='13.04' height='11'><title>layer_0_tensor_parallel_sync | start=292.763 us | end=300.560 us | total=7.796 us</title></rect><text class='timeline-label' x='656.51' y='227.00'>layer_0:tensor</text><line class='timeline-axis' x1='150' y1='272.00' x2='1164' y2='272.00' /></svg></div>
+  </div>
+
+  <div class="card">
+    <h2>Architecture Timeline</h2>
+    <h3>Preamble kernels</h3><table><tr><th>Kernel</th><th>Family</th><th>Total us</th><th>Resource</th><th>Bottleneck</th></tr><tr><td>embedding</td><td>embedding</td><td>7.398</td><td>memory</td><td>memory</td></tr></table>
+    <details><summary>layer_0 <span class='muted'>(308.324 us, 50.84% of wall time)</span></summary><table><tr><th>Kernel</th><th>Family</th><th>Total us</th><th>Resource</th><th>Bottleneck</th></tr><tr><td>layer_0_ffn_w1</td><td>ffn_up</td><td>45.859</td><td>compute</td><td>compute</td></tr>
+<tr><td>layer_0_ffn_down</td><td>ffn_down</td><td>45.859</td><td>compute</td><td>compute</td></tr>
+<tr><td>layer_0_k_proj</td><td>qkv_proj</td><td>39.897</td><td>compute</td><td>compute</td></tr>
+<tr><td>layer_0_v_proj</td><td>qkv_proj</td><td>39.897</td><td>compute</td><td>compute</td></tr>
+<tr><td>layer_0_q_proj</td><td>qkv_proj</td><td>23.448</td><td>compute</td><td>compute</td></tr>
+<tr><td>layer_0_wo</td><td>attn_output_proj</td><td>21.392</td><td>compute</td><td>compute</td></tr>
+<tr><td>layer_0_attn_proj_merge</td><td>attn_proj_merge</td><td>11.855</td><td>memory</td><td>memory</td></tr>
+<tr><td>layer_0_rope</td><td>rope</td><td>11.855</td><td>memory</td><td>memory</td></tr>
+<tr><td>layer_0_q_norm</td><td>norm</td><td>11.369</td><td>memory</td><td>memory</td></tr>
+<tr><td>layer_0_kv_norm</td><td>norm</td><td>11.369</td><td>memory</td><td>memory</td></tr>
+<tr><td>layer_0_fused_attention</td><td>fused_attention</td><td>11.316</td><td>compute</td><td>memory</td></tr>
+<tr><td>layer_0_kv_cache_write</td><td>kv_cache_write</td><td>10.884</td><td>memory</td><td>memory</td></tr>
+<tr><td>layer_0_tensor_parallel_sync</td><td>all_reduce</td><td>7.796</td><td>communication</td><td>memory</td></tr>
+<tr><td>layer_0_attn_norm</td><td>norm</td><td>7.765</td><td>memory</td><td>memory</td></tr>
+<tr><td>layer_0_ffn_norm</td><td>norm</td><td>7.765</td><td>memory</td><td>memory</td></tr></table></details>
+    <h3>Output kernels</h3><table><tr><th>Kernel</th><th>Family</th><th>Total us</th><th>Resource</th><th>Bottleneck</th></tr><tr><td>lm_head</td><td>lm_head</td><td>305.929</td><td>compute</td><td>compute</td></tr></table>
+  </div>
+</body>
+</html>

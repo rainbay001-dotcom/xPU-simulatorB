@@ -26,6 +26,7 @@ from ..reporting import (
     format_graph_diff,
     format_summary,
     result_to_dict,
+    write_comparison_html_report,
     write_html_report,
 )
 from ..sim import Simulator
@@ -135,7 +136,7 @@ def main() -> None:
             "ascend": simulator.simulate(graph, _make_backend("ascend", args.ascend_device_config, args.ascend_calibration_config)),
         }
         report_path = _resolve_html_report_path(args.html_report, graph.name, "compare")
-        write_html_report(graph, results[min(results, key=lambda name: results[name].total_latency_us)], report_path)
+        write_comparison_html_report(graph, results, report_path)
         if args.json_output:
             payload = compare_results(graph, results)
             payload["html_report_path"] = str(report_path)
